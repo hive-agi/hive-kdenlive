@@ -43,12 +43,18 @@
       (binding [client/*kdenlive* (->StubKdenlive {:error :routes/unknown-route})]
         (is (= :routes/unknown-route
                (:error (call-h {"route" "nope"}))))))
-    (testing "underscore route names map to catalog ids"
+    (testing "route strings normalize to catalog ids"
       (let [seen (atom nil)]
         (binding [client/*kdenlive* (reify client/IKdenlive
                                      (-call [_ r p] (reset! seen [r p]) {:ok {}}))]
-          (call-h {"route" "project_open" "params" {:path "/p/x.kdenlive"}})
-          (is (= :project/open (first @seen))))))))
+          (doseq [[input expected] {"project_open"        :project/open
+                                    "project/open"        :project/open
+                                    "timeline_insert-clip" :timeline/insert-clip
+                                    "timeline/insert-clip" :timeline/insert-clip
+                                    "render_jobs"         :render/jobs}]
+            (reset! seen nil)
+            (call-h {"route" input "params" {}})
+            (is (= expected (first @seen)) (str input " -> " expected))))))))
 
 (deftest health-test
   (let [{:keys [status details]} (addon/health (k/addon-ctor {}))]

@@ -23,12 +23,21 @@
     :else
     (render/render! mlt_xml out (cond-> {} (string? profile) (assoc :profile profile)))))
 
+(defn- route-id
+  "Normalize an MCP caller's route string to a catalog id keyword.
+   Canonical form (\"timeline/insert-clip\") passes through; otherwise the
+   FIRST underscore is the namespace separator (\"project_open\" ->
+   :project/open) and later underscores stay — ids never contain one."
+  [s]
+  (keyword (if (str/includes? s "/")
+             s
+             (str/replace-first s "_" "/"))))
+
 (defn- handle-kdenlive-call
   [{:strs [route params] :as _in}]
   (if-not (string? route)
     {:error :kdenlive/bad-params :message "route must be a catalog id string"}
-    (kdenlive/call (keyword (clojure.string/replace route "_" "/"))
-                   (or params {}))))
+    (kdenlive/call (route-id route) (or params {}))))
 
 (defn- handle-routes [_]
   {:ok {:routes (mapv #(select-keys % [:id :method :path]) routes/catalog)}})
