@@ -57,11 +57,14 @@
         res
         (let [builder (-> (HttpRequest/newBuilder)
                           (.uri (URI/create (str base-url (:path ok)))))
-              builder (if (= :post (:method ok))
-                        (.POST builder
-                               (HttpRequest$BodyPublishers/ofString
-                                (->json (:body ok)) StandardCharsets/UTF_8))
-                        (.GET builder))
+              builder (case (:method ok)
+                        :get    (.GET builder)
+                        :delete (.DELETE builder)
+                        ;; :post and :put both carry the JSON body
+                        (.method builder
+                                 (str/upper-case (name (:method ok)))
+                                 (HttpRequest$BodyPublishers/ofString
+                                  (->json (:body ok)) StandardCharsets/UTF_8)))
               resp    (.send ^HttpClient http-client
                              (.build (.header builder "Content-Type" "application/json"))
                              (HttpResponse$BodyHandlers/ofString))
@@ -92,6 +95,7 @@
   (-call (if (delay? *kdenlive*) @*kdenlive* *kdenlive*) route-id (or params {})))
 
 (defn ping
-  "True when the scripting fork answers."
+  "True when the scripting fork answers. GET /project is the cheapest read
+   the route table registers, so it doubles as the health probe."
   []
-  (not (:error (call :server/ping))))
+  (not (:error (call :project/info))))

@@ -10,27 +10,67 @@
 
 (def catalog
   "Every endpoint the transport knows. Path templates use {param} holes,
-   filled from the call's :params."
-  [{:id :server/ping :method :get :path "/ping"}
+   filled from the call's :params. :result names the response field the
+   server wraps the payload in, where the C++ names one.
+
+   Verified against the scripting fork's route table
+   (kdenlive-mcp/kdenlive-server/src/scripting/routetable.cpp, 2026-09-13):
+   every :method/:path below is registered there. Params use the server's
+   camelCase wire names."
+  [;; project
+   {:id :project/info :method :get :path "/project"}
+   {:id :project/new :method :post :path "/project/new"
+    :params {:required #{:name}} :result "path"}
    {:id :project/open :method :post :path "/project/open"
-    :params {:required #{:path}}}
-   {:id :project/save :method :post :path "/project/save"}
-   {:id :project/close :method :post :path "/project/close"}
-   {:id :project/current :method :get :path "/project/current"}
-   {:id :timeline/insert-clip :method :post :path "/timeline/insertClip"
-    :params {:required #{:resource :track :position}
-             :optional #{:in :out}}}
-   {:id :timeline/insert-blank :method :post :path "/timeline/insertBlank"
-    :params {:required #{:track :position :length}}}
-   {:id :timeline/delete-zone :method :post :path "/timeline/deleteZone"
-    :params {:required #{:track :in :out}}}
-   {:id :timeline/insert-track :method :post :path "/timeline/insertTrack"
-    :params {:required #{:index} :optional #{:audio?}}}
-   {:id :effect/append :method :post :path "/effect/append"
-    :params {:required #{:clip-id :mlt-service} :optional #{:args}}}
-   {:id :render/start :method :post :path "/render/start"
-    :params {:optional #{:preset :out :in :out-point}}}
-   {:id :render/status :method :get :path "/render/status"}])
+    :params {:required #{:path}} :result "success"}
+   {:id :project/save :method :post :path "/project/save" :result "success"}
+   {:id :project/save-as :method :post :path "/project/save-as"
+    :params {:required #{:path}} :result "success"}
+   {:id :project/undo :method :post :path "/project/undo" :result "success"}
+   {:id :project/redo :method :post :path "/project/redo" :result "success"}
+   ;; media bin
+   {:id :media/import :method :post :path "/media/import"
+    :params {:required #{:paths} :optional #{:folderId}} :result "ids"}
+   {:id :media/list :method :get :path "/media"}
+   ;; timeline
+   {:id :timeline/tracks :method :get :path "/timeline/tracks"}
+   {:id :timeline/add-track :method :post :path "/timeline/tracks"
+    :params {:required #{:name :isAudio}} :result "id"}
+   {:id :timeline/delete-track :method :delete :path "/timeline/tracks/{id}"
+    :params {:required #{:id}} :result "success"}
+   {:id :timeline/track-clips :method :get :path "/timeline/tracks/{id}/clips"
+    :params {:required #{:id}} :result "clips"}
+   {:id :timeline/insert-clip :method :post :path "/timeline/clips"
+    :params {:required #{:binId :trackId :position}} :result "id"}
+   {:id :timeline/insert-clips-batch :method :post :path "/timeline/clips/batch"
+    :params {:required #{:binIds :trackId :startPosition}} :result "ids"}
+   {:id :timeline/insert-space :method :post :path "/timeline/space"
+    :params {:required #{:trackId :position :duration} :optional #{:allTracks}}
+    :result "success"}
+   {:id :timeline/zone-extract :method :post :path "/timeline/zone/extract"
+    :params {:required #{:inFrame :outFrame} :optional #{:liftOnly}}
+    :result "success"}
+   ;; effects — the server reads clipId/effectId from the BODY; {id} in the
+   ;; path is vestigial but registered, so :id is required too
+   {:id :effects/available :method :get :path "/effects/available" :result "effects"}
+   {:id :clip/append-effect :method :post :path "/timeline/clips/{id}/effects"
+    :params {:required #{:id :clipId :effectId} :optional #{:params}}
+    :result "success"}
+   ;; render — POST /render with :outputFile (+ optional :preset :inFrame
+   ;; :outFrame :params), or a bare {:url ...}
+   {:id :render/start :method :post :path "/render"
+    :params {:optional #{:outputFile :preset :inFrame :outFrame :params :url}}
+    :result "success"}
+   {:id :render/jobs :method :get :path "/render/jobs" :result "jobs"}
+   {:id :render/abort :method :post :path "/render/jobs/abort"
+    :params {:required #{:path}} :result "success"}
+   {:id :render/presets :method :get :path "/render/presets" :result "presets"}
+   ;; playback
+   {:id :playback/play :method :post :path "/playback/play"}
+   {:id :playback/pause :method :post :path "/playback/pause"}
+   {:id :playback/seek :method :post :path "/playback/seek"
+    :params {:required #{:frame}}}
+   {:id :playback/position :method :get :path "/playback/position"}])
 
 (def by-id
   "Route id -> catalog entry."

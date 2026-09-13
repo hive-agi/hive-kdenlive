@@ -54,4 +54,4 @@
   (let [{:keys [status details]} (addon/health (k/addon-ctor {}))]
     (is (= :ok status))
     (is (contains? details :melt-on-path?))
-    (is (= 12 (:routes details)))))
+    (is (= 27 (:routes details)))))
