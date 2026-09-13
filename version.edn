@@ -1,0 +1,6 @@
+{:lib      io.github.hive-agi/hive-kdenlive
+ :minor    0
+ :license  {:name "MIT" :url "https://opensource.org/licenses/MIT"}
+ :scm-url  "https://github.com/hive-agi/hive-kdenlive"
+ :src-dirs ["src" "resources"]
+ :publish  :clojars}

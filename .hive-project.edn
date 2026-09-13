@@ -1,0 +1,6 @@
+{:project-id  "hive-kdenlive"
+ :description "IAddon exposing Kdenlive / MLT video editing as MCP tools: a portable MLT document core (JVM, cljw, cljrs), headless melt rendering, and an HTTP transport to the Kdenlive scripting fork driven by a route catalog."
+ :type        :library
+ :kg-backend  :datahike
+ :parent      "hive"
+ :carto       {:source-roots ["dev" "resources" "src" "test"]}}

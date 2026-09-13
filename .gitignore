@@ -1,0 +1,8 @@
+/target
+/classes
+/.cpcache
+/.clj-kondo/.cache
+/.lsp/.cache
+/local.deps.edn
+.nrepl-port
+/native/rust/target

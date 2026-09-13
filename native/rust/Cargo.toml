@@ -1,0 +1,18 @@
+[package]
+name = "hive-kdenlive-native"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# cdylib: the artifact cljrs dlopens and calls `cljrs_init` on.
+[lib]
+name = "hive_kdenlive_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+cljrs-interop = { path = "/home/leibniz/PP/clojurust/crates/cljrs-interop" }
+cljrs-runtime = { path = "/home/leibniz/PP/clojurust/crates/cljrs-runtime" }
+cljrs-value = { path = "/home/leibniz/PP/clojurust/crates/cljrs-value" }
+cljrs-gc = { path = "/home/leibniz/PP/clojurust/crates/cljrs-gc" }
+libloading = "0.8"
+serde_json = "1.0"

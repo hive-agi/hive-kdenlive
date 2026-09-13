@@ -1,0 +1,4 @@
+;; `catch Exception` in the portable .cljc core reads as unresolved under the
+;; cljs lint pass; the ns docstring forbids reader conditionals, so the symbol
+;; is excluded here instead of wrapped in #?.
+{:linters {:unresolved-symbol {:exclude [Exception]}}}

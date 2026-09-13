@@ -1,0 +1,108 @@
+(ns hive-kdenlive.native-probe
+  "Proof that the native MLT bridge renders, run on cljrs.
+
+   Nothing here shells out. Every answer arrives through
+   `hive-kdenlive.native/*`, a Rust cdylib calling libmlt-7, the engine
+   Kdenlive renders with.
+
+   Three stages, each checked by a NUMBER rather than by looking plausible:
+     1. render a 40-frame colour clip to a file, then probe the file back
+     2. write an MLT document (colour, blank, the rendered clip) and probe it:
+        its length must be the sum of its entries
+     3. render the document and check the frame count the render reports
+   Exits non-zero when any stage disagrees."
+  (:require [clojure.string :as str]))
+
+(defn- ok? [s] (str/starts-with? (str s) "{\"ok\":"))
+
+(defn- field
+  "The integer value of the first `\"k\":n` in the JSON string S. The probe
+   reads a handful of scalars, so a regex beats carrying a JSON parser."
+  [s k]
+  (when-let [[_ n] (re-find (re-pattern (str "\"" k "\":(-?[0-9]+)")) (str s))]
+    (parse-long n)))
+
+(def failures (atom 0))
+
+(defn- check [label expected actual]
+  (if (= expected actual)
+    (println "  OK  " label "=" actual)
+    (do (swap! failures inc)
+        (println "  FAIL" label "expected" expected "got" actual))))
+
+(defn- document
+  "An MLT document: 25 frames of red, a 10-frame blank, then the first 40
+   frames of CLIP, over a black background track, in a 320x240 25fps profile.
+
+   Two details are load-bearing, both measured by sampling rendered pixels:
+   - a producer whose mlt_service is `color` takes a BARE colour as its
+     resource. `color:#ff0000` there renders near-black; the `color:` prefix
+     belongs to a loader resource string that names no service.
+   - a blank shows the track BELOW it. With no background track it renders
+     white, which is why Kdenlive always writes its black_track first."
+  [clip]
+  (str "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+       "<mlt LC_NUMERIC=\"C\" version=\"7.22.0\">\n"
+       " <profile description=\"hive 320x240 25\" width=\"320\" height=\"240\" progressive=\"1\""
+       " sample_aspect_num=\"1\" sample_aspect_den=\"1\" display_aspect_num=\"4\" display_aspect_den=\"3\""
+       " frame_rate_num=\"25\" frame_rate_den=\"1\" colorspace=\"601\"/>\n"
+       " <producer id=\"black_track\"><property name=\"resource\">black</property>"
+       "<property name=\"mlt_service\">color</property><property name=\"length\">75</property></producer>\n"
+       " <producer id=\"red\"><property name=\"resource\">#ff0000</property>"
+       "<property name=\"mlt_service\">color</property></producer>\n"
+       " <producer id=\"clip\"><property name=\"resource\">" clip "</property></producer>\n"
+       " <playlist id=\"background\"><entry producer=\"black_track\" in=\"0\" out=\"74\"/></playlist>\n"
+       " <playlist id=\"v1\">\n"
+       "  <entry producer=\"red\" in=\"0\" out=\"24\"/>\n"
+       "  <blank length=\"10\"/>\n"
+       "  <entry producer=\"clip\" in=\"0\" out=\"39\"/>\n"
+       " </playlist>\n"
+       " <tractor id=\"main\"><track producer=\"background\"/><track producer=\"v1\"/></tractor>\n"
+       "</mlt>\n"))
+
+(defn -main [& args]
+  (let [dir  (or (first args) "/tmp")
+        clip (str dir "/hive-kdenlive-green.mkv")
+        doc  (str dir "/hive-kdenlive-probe.mlt")
+        out  (str dir "/hive-kdenlive-probe.mkv")
+        enc  "{\"vcodec\":\"mpeg4\",\"an\":\"1\",\"f\":\"matroska\"}"]
+    (println "== hive-kdenlive native MLT bridge, on cljrs ==")
+    (println "library-loaded?" (hive-kdenlive.native/available?))
+    (println "version:" (hive-kdenlive.native/version))
+
+    (println "-- 1. render a colour clip, probe it back")
+    (let [r (hive-kdenlive.native/render "color:#00ff00" clip
+                                         (str "{\"in\":0,\"out\":39,"
+                                              (subs enc 1)))]
+      (if (ok? r)
+        (do (check "rendered frames" 40 (field r "frames"))
+            (println "  bytes" (field r "bytes") "in" (field r "elapsed_ms") "ms"))
+        (do (swap! failures inc) (println "  FAIL render:" r))))
+    (let [p (hive-kdenlive.native/probe clip)]
+      (if (ok? p)
+        (check "probed length of the rendered clip" 40 (field p "length"))
+        (do (swap! failures inc) (println "  FAIL probe:" p))))
+
+    (println "-- 2. an MLT document: 25 + blank 10 + 40")
+    (spit doc (document clip))
+    (let [p (hive-kdenlive.native/probe doc)]
+      (if (ok? p)
+        (do (check "document length" 75 (field p "length"))
+            (check "document profile width" 320 (field p "width")))
+        (do (swap! failures inc) (println "  FAIL probe:" p))))
+
+    (println "-- 3. render the document")
+    (let [r (hive-kdenlive.native/render doc out enc)]
+      (if (ok? r)
+        (do (check "rendered document frames" 75 (field r "frames"))
+            (println "  bytes" (field r "bytes") "in" (field r "elapsed_ms") "ms"))
+        (do (swap! failures inc) (println "  FAIL render:" r))))
+    (let [p (hive-kdenlive.native/probe out)]
+      (if (ok? p)
+        (check "probed length of the rendered document" 75 (field p "length"))
+        (do (swap! failures inc) (println "  FAIL probe:" p))))
+
+    (println (if (zero? @failures)
+               "native bridge verified"
+               (str @failures " check(s) failed")))
+    (when-not (zero? @failures) (System/exit 1))))
