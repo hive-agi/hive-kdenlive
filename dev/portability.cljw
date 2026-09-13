@@ -1,0 +1,48 @@
+;; Portability smoke gate — run under ClojureWasm:
+;;   cljw -cp src dev/portability.cljw
+;; Exits non-zero when any mlt.* path disagrees with the JVM suite's claims.
+;; The checks mirror what xml_test/model_test/time_test pin on the JVM, run
+;; through the same public API so a divergence means the host, not the test.
+(require '[hive-kdenlive.mlt.model :as model]
+         '[hive-kdenlive.mlt.time :as time]
+         '[hive-kdenlive.mlt.xml :as xml])
+
+(def failures (atom 0))
+
+(defn check [label expected actual]
+  (if (= expected actual)
+    (println "  OK  " label)
+    (do (swap! failures inc)
+        (println "  FAIL" label "expected" (pr-str expected) "got" (pr-str actual)))))
+
+(println "== mlt.* under ClojureWasm ==")
+
+(let [doc (model/document
+           (model/profile :width 320 :height 240 :fps 25)
+           (model/producer "color:red" :id "p0" :length "25")
+           (model/playlist "pl0" [(model/entry "p0")])
+           (model/tractor "tractor0" [(model/track "pl0")]))
+      out (model/emit doc)
+      {:keys [ok error]} (model/parse out)]
+  (check "document emits with declaration" true
+         (clojure.string/starts-with? out "<?xml version=\"1.0\" encoding=\"utf-8\"?>"))
+  (check "document parses" nil error)
+  (check "round-trip is byte-stable" out (model/emit ok)))
+
+(check "attr escaping" "<a k=\"a&amp;b\"/>"
+       (second (clojure.string/split (xml/emit (xml/element "a" [["k" "a&b"]])) #"\n")))
+
+(doseq [[label input] {"mismatched close" "<a></b>"
+                       "not a string"    42
+                       "unterminated"    "<a k=\"v>"}]
+  (check (str "malformed: " label) :mlt/xml-malformed (:error (xml/parse input))))
+
+(check "clock->frames 1s @25" 25 (time/clock->frames "00:00:01.000" 25))
+(check "frames->clock 250 @25" "00:00:10.000" (time/frames->clock 250 25))
+(check "NTSC pair" [30000 1001] (time/fps-pair 29.97))
+(check "bare frame passthrough" 150 (time/clock->frames "150" 25))
+(check "duration inclusive" 125 (time/duration "00:00:00.000" "00:00:04.960" 25))
+
+(println (if (zero? @failures) "portable: all checks passed"
+             (str @failures " check(s) failed")))
+(when-not (zero? @failures) (System/exit 1))
