@@ -1,0 +1,12 @@
+{:addon/id           "hive.kdenlive"
+ :addon/kind         :addon
+ :addon/type         :native
+ :addon/version      "0.1.0"
+ :addon/init-ns      "hive-kdenlive.addon"
+ :addon/init-fn      "addon-ctor"
+ :addon/config       {}
+ :addon/capabilities #{:tools :health-reporting}
+ :addon/dependencies #{}
+ :addon/description  "Kdenlive / MLT video editing: portable MLT document core, headless melt rendering, HTTP transport to the Kdenlive scripting fork driven by a route catalog."
+ :addon/maturity     :alpha
+ :addon/trust-class  :foss}

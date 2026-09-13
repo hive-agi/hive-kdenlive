@@ -1,9 +1,11 @@
 {:paths ["src" "resources"]
 
- ;; The MLT document core is portable (JVM / cljw / cljrs): clojure.core and
- ;; clojure.string only, no reader conditionals. Keep :deps a leaf — hosts and
- ;; transports (melt render, Kdenlive HTTP) join as aliases or addon wiring.
- :deps {org.clojure/clojure {:mvn/version "1.12.5"}}
+ ;; The MLT document core (mlt.*) is portable (JVM / cljw / cljrs):
+ ;; clojure.core and clojure.string only, no reader conditionals.
+ ;; hive-addon is the host-neutral IAddon contract for the addon wiring only;
+ ;; the portable namespaces never require it.
+ :deps {org.clojure/clojure {:mvn/version "1.12.5"}
+        io.github.hive-agi/hive-addon {:mvn/version "1.0.4"}}
 
  :aliases
  {:dev  {:extra-paths ["dev" "test"]
