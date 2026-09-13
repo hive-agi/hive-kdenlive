@@ -43,6 +43,15 @@
 (check "bare frame passthrough" 150 (time/clock->frames "150" 25))
 (check "duration inclusive" 125 (time/duration "00:00:00.000" "00:00:04.960" 25))
 
+(require '[hive-kdenlive.kdenlive.routes :as routes])
+(check "route catalog loads" 27 (count routes/catalog))
+(check "request builds" {:ok {:method :post :path "/timeline/clips"
+                              :body {:binId "7" :trackId 1 :position 0}}}
+       (routes/request :timeline/insert-clip {:binId "7" :trackId 1 :position 0}))
+(check "path template fills" "/timeline/tracks/3/clips"
+       (:path (:ok (routes/request :timeline/track-clips {:id 3}))))
+(check "unknown route" :routes/unknown-route (:error (routes/request :nope {})))
+
 (println (if (zero? @failures) "portable: all checks passed"
              (str @failures " check(s) failed")))
 (when-not (zero? @failures) (System/exit 1))
