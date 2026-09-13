@@ -11,7 +11,8 @@
         its length must be the sum of its entries
      3. render the document and check the frame count the render reports
    Exits non-zero when any stage disagrees."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [hive-kdenlive.mlt.model :as m]))
 
 (defn- ok? [s] (str/starts-with? (str s) "{\"ok\":"))
 
@@ -32,7 +33,9 @@
 
 (defn- document
   "An MLT document: 25 frames of red, a 10-frame blank, then the first 40
-   frames of CLIP, over a black background track, in a 320x240 25fps profile.
+   frames of CLIP, over a black background track, in a 320x240 25fps profile,
+   built with the portable model — the probe dogfoods the same builders the
+   JVM and cljw surfaces expose.
 
    Two details are load-bearing, both measured by sampling rendered pixels:
    - a producer whose mlt_service is `color` takes a BARE colour as its
@@ -41,24 +44,19 @@
    - a blank shows the track BELOW it. With no background track it renders
      white, which is why Kdenlive always writes its black_track first."
   [clip]
-  (str "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
-       "<mlt LC_NUMERIC=\"C\" version=\"7.22.0\">\n"
-       " <profile description=\"hive 320x240 25\" width=\"320\" height=\"240\" progressive=\"1\""
-       " sample_aspect_num=\"1\" sample_aspect_den=\"1\" display_aspect_num=\"4\" display_aspect_den=\"3\""
-       " frame_rate_num=\"25\" frame_rate_den=\"1\" colorspace=\"601\"/>\n"
-       " <producer id=\"black_track\"><property name=\"resource\">black</property>"
-       "<property name=\"mlt_service\">color</property><property name=\"length\">75</property></producer>\n"
-       " <producer id=\"red\"><property name=\"resource\">#ff0000</property>"
-       "<property name=\"mlt_service\">color</property></producer>\n"
-       " <producer id=\"clip\"><property name=\"resource\">" clip "</property></producer>\n"
-       " <playlist id=\"background\"><entry producer=\"black_track\" in=\"0\" out=\"74\"/></playlist>\n"
-       " <playlist id=\"v1\">\n"
-       "  <entry producer=\"red\" in=\"0\" out=\"24\"/>\n"
-       "  <blank length=\"10\"/>\n"
-       "  <entry producer=\"clip\" in=\"0\" out=\"39\"/>\n"
-       " </playlist>\n"
-       " <tractor id=\"main\"><track producer=\"background\"/><track producer=\"v1\"/></tractor>\n"
-       "</mlt>\n"))
+  (m/emit
+   (m/document
+    (m/profile :width 320 :height 240 :fps 25 :sar [1 1] :dar [4 3]
+               :colorspace 601)
+    (m/producer "black" :id "black_track"
+                :properties {:mlt_service "color" :length 75})
+    (m/producer "#ff0000" :id "red" :properties {:mlt_service "color"})
+    (m/producer clip :id "clip")
+    (m/playlist "background" [(m/entry "black_track" :in "0" :out "74")])
+    (m/playlist "v1" [(m/entry "red" :in "0" :out "24")
+                      (m/blank 10)
+                      (m/entry "clip" :in "0" :out "39")])
+    (m/tractor "main" [(m/track "background") (m/track "v1")]))))
 
 (defn -main [& args]
   (let [dir  (or (first args) "/tmp")
