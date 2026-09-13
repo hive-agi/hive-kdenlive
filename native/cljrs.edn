@@ -1,0 +1,11 @@
+{:paths ["src" "../src"]
+
+ ;; The native half. `cljrs build-native` builds this crate and the runtime
+ ;; dlopens the resulting cdylib before any Clojure code runs, calling
+ ;; `cljrs_init` to intern `hive-kdenlive.native/*`.
+ ;;
+ ;; "../src" puts the addon's portable .cljc document core on the path, so a
+ ;; cljrs program can build a project as data, emit it, and render it through
+ ;; libmlt in one process.
+ :rust {:crate "rust"
+        :init  "hive_kdenlive_native::cljrs_init"}}

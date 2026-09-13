@@ -7,6 +7,7 @@
   (:require [hive-addon.protocol :as addon]
             [hive-kdenlive.kdenlive.client :as kdenlive]
             [hive-kdenlive.kdenlive.routes :as routes]
+            [hive-kdenlive.mlt.project :as project]
             [hive-kdenlive.render :as render]
             [clojure.string :as str]))
 
@@ -46,6 +47,21 @@
   {:ok {:kdenlive (kdenlive/ping)
         :melt     (some? (render/which "melt"))}})
 
+(defn- handle-inspect-project
+  [{:strs [path] :as _in}]
+  (cond
+    (not (string? path))
+    {:error :kdenlive/bad-params :message "path must be a string"}
+
+    (not (.exists (java.io.File. path)))
+    {:error :kdenlive/file-not-found :path path}
+
+    :else
+    (let [{:keys [ok error] :as res} (project/summarize (slurp path))]
+      (if error
+        res
+        {:ok (assoc ok :duration-frames (project/duration-frames ok))}))))
+
 ;; ---------------------------------------------------------------------------
 ;; Tool definitions
 
@@ -72,7 +88,13 @@
    {:name        "ping"
     :description "Probe melt on PATH and the Kdenlive scripting fork."
     :inputSchema {:type "object" :properties {}}
-    :handler     handle-ping}])
+    :handler     handle-ping}
+   {:name        "inspect_project"
+    :description "Summarize a .kdenlive/MLT project file: profile, bin, tracks, duration."
+    :inputSchema {:type       "object"
+                  :properties {"path" {:type "string" :description "project file path"}}
+                  :required   ["path"]}
+    :handler     handle-inspect-project}])
 
 ;; ---------------------------------------------------------------------------
 ;; IAddon
