@@ -1,5 +1,10 @@
 #kaocha/v1
 {:tests [{:id          :unit
           :test-paths  ["test"]
-          :ns-patterns [".*-test$"]}]
+          :ns-patterns [".*-test$"]
+          :kaocha.filter/skip-meta [:integration]}
+         {:id          :integration
+          :test-paths  ["test"]
+          :ns-patterns [".*-test$"]
+          :kaocha.filter/focus-meta [:integration]}]
  :reporter kaocha.report/documentation}
