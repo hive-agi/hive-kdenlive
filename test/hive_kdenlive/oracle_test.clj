@@ -63,6 +63,18 @@
                    "\nIf the change to emission was intended, run"
                    " (hive-kdenlive.oracle-test/regenerate!) and commit.")))))
 
+(deftest emission-is-stable-across-execution-tiers-test
+  (testing "the document emits identically however hot the emitter gets"
+    ;; The native hosts run this same repeat: a host that promotes a hot
+    ;; function to another execution tier can diverge only after warm-up, and a
+    ;; gate that emits once would never reach that tier. See
+    ;; `oracle/default-iterations` for the observed instance.
+    (let [{:keys [ok? iterations diverged-at report]}
+          (oracle/check-repeatedly (slurp (expected-file)) oracle/default-iterations)]
+      (is ok? (str "diverged on pass " diverged-at "\n" report))
+      (is (= oracle/default-iterations iterations))
+      (is (nil? diverged-at)))))
+
 (deftest the-edn-fixture-is-the-same-document-test
   (testing "document.edn is the canonical document as data, not a stale copy"
     (is (= oracle/document (edn/read-string (slurp (io/file oracle/edn-path)))))))

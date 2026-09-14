@@ -23,10 +23,14 @@
 
 (def expected (slurp oracle/expected-path))
 
-(def result (oracle/check expected))
+(def result (oracle/check-repeatedly expected oracle/default-iterations))
 
 (println "  fixture " oracle/expected-path (count expected) "bytes")
 (println "  emitted " (:bytes result) "bytes")
+(println "  passes  " (:iterations result)
+         (if (:diverged-at result)
+           (str "(diverged on pass " (:diverged-at result) ")")
+           "(all identical)"))
 
 (if (:ok? result)
   (println "  OK     emission is byte-identical to the JVM fixture")

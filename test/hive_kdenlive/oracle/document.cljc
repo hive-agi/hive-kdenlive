@@ -121,3 +121,33 @@
     {:ok?    (nil? report)
      :report report
      :bytes  (count actual)}))
+
+(def default-iterations
+  "Why a byte oracle repeats itself instead of emitting once.
+
+   A host may execute the SAME function differently once it has been called
+   often enough: clojurust promotes a hot function to another tier, and
+   tier-dependent divergence has been observed there -- true?/false?/identical?
+   answering wrongly from the 51st call on (memory 20260913213113-2bfe93b3). A
+   gate that builds and emits the document a single time therefore only ever
+   tests the interpreter, and would report agreement for an emitter that breaks
+   the moment real work warms it up.
+
+   200 is past every threshold named so far, and the whole document is 1.7 kB,
+   so the repeat costs milliseconds."
+  200)
+
+(defn check-repeatedly
+  "`check` run N times, rebuilding and re-emitting the document each pass, so
+   the comparison spans whatever execution tiers the host promotes it through.
+   Answers like `check`, plus :iterations (how many passes ran) and
+   :diverged-at (the 1-based pass that first disagreed, nil when all agreed).
+   Stops at the first divergence -- the diff is the same one every later pass
+   would print."
+  [expected n]
+  (loop [i 1]
+    (let [result (check expected)]
+      (cond
+        (not (:ok? result)) (assoc result :iterations i :diverged-at i)
+        (>= i n)            (assoc result :iterations i :diverged-at nil)
+        :else               (recur (inc i))))))
