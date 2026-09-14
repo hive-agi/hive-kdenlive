@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mlt LC_NUMERIC="C" version="7.30.0" title="hive-kdenlive">
+ <profile width="320" height="240" progressive="1" sample_aspect_num="1" sample_aspect_den="1" display_aspect_num="4" display_aspect_den="3" frame_rate_num="30000" frame_rate_den="1001" colorspace="601"/>
+ <producer id="black_track">
+  <property name="resource">black</property>
+  <property name="mlt_service">color</property>
+  <property name="length">75</property>
+ </producer>
+ <producer id="red &quot;one&quot; &amp; &lt;two&gt;">
+  <property name="resource">#ff0000</property>
+  <property name="mlt_service">color</property>
+ </producer>
+ <producer id="clip" in="0" out="39">
+  <property name="resource">/tmp/clip a&amp;b.mkv</property>
+  <property name="mlt_service">avformat</property>
+  <property name="meta.attr.title">line one
+line two	after a tab</property>
+  <property name="audio_index">1</property>
+ </producer>
+ <playlist id="background">
+  <entry producer="black_track" in="0" out="74"/>
+ </playlist>
+ <playlist id="v1">
+  <entry producer="red &quot;one&quot; &amp; &lt;two&gt;" in="0" out="24"/>
+  <blank length="10"/>
+  <entry producer="clip" in="0" out="39"/>
+ </playlist>
+ <playlist id="empty"/>
+ <tractor id="main" title="hive-kdenlive">
+  <multitrack>
+   <track producer="background"/>
+   <track producer="v1" hide="audio"/>
+  </multitrack>
+  <transition in="0" out="74">
+   <property name="mlt_service">frei0r.cairoblend</property>
+   <property name="a_track">0</property>
+   <property name="b_track">1</property>
+   <property name="disable">0</property>
+  </transition>
+  <filter id="f0">
+   <property name="mlt_service">volume</property>
+   <property name="level">0.5</property>
+  </filter>
+ </tractor>
+</mlt>

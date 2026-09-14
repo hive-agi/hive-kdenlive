@@ -1,0 +1,55 @@
+;; Cross-host byte oracle — the clojurust leg.
+;;
+;;   cljrs run dev/oracle.cljrs --src-path src --src-path test
+;;
+;; Emits THE canonical document (hive-kdenlive.oracle.document, the same
+;; namespace the JVM suite and the cljw runner load) and compares the result
+;; byte-for-byte against dev/oracle/expected.mlt, which the JVM wrote.
+;;
+;; native/src/hive_kdenlive/native_probe.cljrs builds a document too, but then
+;; asks libmlt for frame counts — it never looks at the emitted bytes, so an
+;; emission divergence between this host and the JVM was invisible. This file
+;; is the missing comparison, and it needs no native library: it is pure
+;; document emission against one shared artifact.
+;;
+;; Exits non-zero on divergence, after printing a unified diff of the first
+;; differing line — produced by the SAME comparator all three hosts use.
+;;
+;; The non-zero exit is a `throw`, not `(System/exit 1)`. Measured 2026-09-13:
+;; cljrs resolves NEITHER `System/exit` NOR a bare `exit`, so the cljw spelling
+;; would fail here with "Unable to resolve symbol: System/exit" — which happens
+;; to exit 1, but reports the missing symbol instead of the divergence, and
+;; would exit 1 on the SUCCESS path too if it were ever reached. An unhandled
+;; ex-info exits 1 and carries the reason.
+;;
+;; Run from the repository root: the fixture path is relative to it.
+
+(require '[hive-kdenlive.oracle.document :as oracle])
+
+(println "== hive-kdenlive byte oracle, on clojurust ==")
+
+(def expected (slurp oracle/expected-path))
+
+(def result (oracle/check-repeatedly expected oracle/default-iterations))
+
+(println "  fixture " oracle/expected-path (count expected) "bytes")
+(println "  emitted " (:bytes result) "bytes")
+(println "  passes  " (:iterations result)
+         (if (:diverged-at result)
+           (str "(diverged on pass " (:diverged-at result) ")")
+           "(all identical)"))
+
+(if (:ok? result)
+  (println "  OK     emission is byte-identical to the JVM fixture")
+  (do (println "  FAIL   emission diverges from the JVM fixture")
+      (println (:report result))))
+
+(println (if (:ok? result)
+           "byte oracle: cljrs agrees with the JVM"
+           "byte oracle: cljrs DISAGREES with the JVM"))
+
+(when-not (:ok? result)
+  (throw (ex-info "byte oracle: cljrs DISAGREES with the JVM"
+                  {:fixture oracle/expected-path
+                   :expected-bytes (count expected)
+                   :emitted-bytes (:bytes result)})))
