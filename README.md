@@ -1,25 +1,118 @@
 # hive-kdenlive
 
-Kdenlive / MLT video editing as MCP tools.
+Kdenlive / MLT video editing as MCP tools: an `IAddon` (`hive.kdenlive`) that
+edits and renders timelines with **no Kdenlive running**, reaches a patched
+Kdenlive over HTTP when one is, and drives libmlt natively from clojurust.
 
-- `hive-kdenlive.mlt.*` — portable MLT document core (JVM, ClojureWasm, cljrs):
-  XML parse/emit (`mlt.xml`), document builders (`mlt.model`), time/frame
-  arithmetic (`mlt.time`). Byte-deterministic, no IO, core + string only.
-- `hive-kdenlive.render` — headless melt boundary (JVM): `IRender` port,
-  `MeltRenderer` process adapter, `render!` / `render-doc!` facade.
-- `hive-kdenlive.kdenlive.*` — HTTP transport to the Kdenlive scripting fork,
-  driven by the route catalog (`kdenlive.routes`) as data.
-- `hive-kdenlive.addon` — the `hive.kdenlive` IAddon: 4 MCP tools (`render`,
-  `kdenlive_call`, `routes`, `ping`) over the seams above.
-- `native/` — cljrs native bridge: a Rust cdylib dlopening libmlt-7, rendering
-  and probing media in-process with no JVM and no melt subprocess.
+Built from the reference project
+[kdenlive-mcp](https://github.com/D-Ogi/kdenlive-api) (177 MCP tools over a
+Kdenlive 26.03 fork), keeping its vocabulary and not its dependency on that
+fork being built.
+
+## Three ways to reach a timeline, one vocabulary
+
+The fork's route catalog (`hive-kdenlive.kdenlive.routes`) names what can be
+asked of a timeline: `media/import`, `timeline/add-track`,
+`timeline/insert-clip`, `timeline/insert-space`, `timeline/zone-extract`,
+`render/start`, and so on. Every transport answers those ids.
+
+| transport | where the timeline lives | needs |
+|---|---|---|
+| **:http** (`kdenlive.client`) | inside a running scripting-enabled Kdenlive | the fork, listening on `KDENLIVE_SCRIPTING_ADDRESS:PORT` (default 127.0.0.1:9876), `KDENLIVE_SCRIPTING_SECRET` if set |
+| **:document** (`kdenlive.document`, `mlt.timeline`) | a `.hkd.edn` file, with the `.mlt` melt renders written beside it | `melt` |
+| **native** (`native/`) | libmlt in a clojurust process, over stdio | `cljrs`, libmlt-7 |
+
+Stock Kdenlive (23.08 here) has almost no scripting surface, so the :document
+transport is what works out of the box.
+
+## MCP tools
+
+| tool | what it does |
+|---|---|
+| `kdenlive_call` | one catalog route; with `project` it is answered headlessly against that timeline file, without it over HTTP |
+| `render` | MLT XML to a video file with melt |
+| `inspect_project` | summarise a `.kdenlive` / MLT file: profile, bin, tracks, duration |
+| `routes` | the route catalog |
+| `ping` | melt on PATH, fork reachable |
+
+A headless edit, as an MCP client sends it:
+
+```json
+{"route": "media/import",         "params": {"paths": ["/clips/a.mkv", "/clips/b.mkv"]}, "project": "/work/cut.hkd.edn"}
+{"route": "timeline/add-track",   "params": {"name": "V1", "isAudio": false},              "project": "/work/cut.hkd.edn"}
+{"route": "timeline/insert-clip", "params": {"binId": "1", "trackId": "3", "position": 0},  "project": "/work/cut.hkd.edn"}
+{"route": "render/start",         "params": {"outputFile": "/work/cut.mkv"},               "project": "/work/cut.hkd.edn"}
+```
+
+The headless verbs refuse what they cannot do faithfully instead of
+approximating it. Examples: an insert that would overlap a clip, space or a
+zone that would cut a clip in two, or an import with one unreadable file (all
+or nothing). Media lengths come from `melt <file> -consumer xml`, the engine
+that renders.
+
+The addon mounts lazily (`:addon/lifecycle {:policy :lazy :idle-ms 900000}`):
+on the first call to one of its tools, released after fifteen idle minutes.
+
+## Layout
+
+```
+mlt/xml.cljc        XML text <-> nodes, by hand; byte-stable round trip      portable
+mlt/model.cljc      MLT builders: profile, producer, playlist, tractor ...    portable
+mlt/time.cljc       frames <-> clock at a profile fps                          portable
+mlt/project.cljc    read a .kdenlive / MLT file back into data                 portable
+mlt/timeline.cljc   the headless timeline: verbs keyed by route id, ->document portable
+kdenlive/routes.cljc  the fork's route catalog as data                        portable
+kdenlive/client.clj   IKdenlive port + HttpKdenlive                            JVM
+kdenlive/document.clj IKdenlive over a timeline file, melt probe and render    JVM
+render.clj            IRender + melt                                           JVM
+addon.clj             the IAddon
+native/               cljrs + Rust cdylib over libmlt-7 (see native/README.md)
+```
+
+"Portable" means the same source runs on the JVM, ClojureWasm (`cljw`) and
+clojurust (`cljrs`), and the gates below prove it on all three.
 
 ## Verify
 
 ```sh
-clojure -M:test unit          # JVM unit suite (kaocha)
-clojure -M:test integration   # real melt render (self-skips without melt)
-cljw -cp src dev/portability.cljw   # ClojureWasm portability gate
-cd native && ./build.sh       # build the cdylib (debug profile pairs with debug cljrs)
-cd native && cljrs run src/hive_kdenlive/native_probe.cljrs -- /tmp/probe
+clojure -M:test                                         # 80 tests: unit + real melt integration (self-skips without melt/ffmpeg)
+cljw -cp src dev/portability.cljw                       # mlt.* on ClojureWasm
+cljw -cp src:test dev/oracle.cljw                       # byte oracle: cljw emission == JVM fixture, 200 passes
+cljrs run dev/oracle.cljrs --src-path src --src-path test   # same, clojurust
+cljrs run --src-path src dev/timeline_portability.cljc  # headless timeline, 60 passes (also cljw / JVM)
+native/build.sh && native/verify.sh                     # libmlt from cljrs, checked by ffprobe and pixel samples
 ```
+
+## Measured along the way
+
+- **Frame counts are not enough.** Pixel samples show two cases where the frame
+  count was right and the picture was wrong. A colour producer spelled
+  `color:#ff0000` under `mlt_service=color` renders near-black. A `<blank>` with
+  nothing below it renders white, which is why every document gets a black
+  background track. The render tests sample pixels with ffmpeg.
+- **The HTTP transport had never reached the fork.** It defaulted to port 4700
+  (the fork listens on 9876). It also read the JDK's response through reflection
+  on a package-private class, which threw on every response. A stubbed port hid
+  both. `http_wire_test` now drives the real client against a local server that
+  answers like the fork.
+- **The manifest was invisible to discovery.** `:addon/maturity :alpha` is not a
+  MountSpec value, so schema-validated discovery found zero specs. Now
+  `:experimental`, and `manifest_test` holds it.
+- **clojurust defects**, all worked around in this code: `assoc-in` through a
+  vector turns it into a map; `true?`/`false?`/`identical?` go wrong once a fn is
+  hot; no exit primitive; a callback from a cdylib breaks on vectors past 32
+  elements; the MLT consumer must be stopped before it is closed.
+- **Decoding, not the timeline.** A 1080p render has colorspace 709. ffmpeg
+  decodes it untagged as BT.601, so full red reads back as (216,0,0). The
+  integration test classifies colours rather than demanding 255.
+
+## Not verified here
+
+- The HTTP transport against a live scripting-enabled Kdenlive. The fork is not
+  built on this machine; `http_wire_test` holds the client to the fork's source.
+- Opening the generated `.mlt` in the Kdenlive GUI. It is an MLT document melt
+  renders, not a `.kdenlive` project with Kdenlive's bin metadata.
+
+## License
+
+MIT.
