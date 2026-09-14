@@ -1,8 +1,11 @@
 name: release
 
-# Patch-bump and publish only when the push actually changes the library.
-# README / CI / test-only commits do not mint a version, because a published
-# pom is immutable on both Clojars and the private registry.
+# Patch-bump, tag and publish to Clojars when a push changes the library.
+# README / CI-only commits do not mint a version: a published pom is immutable.
+#
+# CI owns VERSION: push the feature commit only and let this workflow pick
+# the number (bump -> changelog -> commit -> tag -> deploy).
+# Secrets (hive-agi org): CLOJARS_USERNAME, CLOJARS_DEPLOY_TOKEN.
 on:
   push:
     branches: [main]
@@ -10,6 +13,9 @@ on:
       - 'src/**'
       - 'resources/**'
       - 'deps.edn'
+      - 'version.edn'
+      - 'test/**'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
 
 concurrency:
@@ -22,16 +28,26 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: DeLaGuardo/setup-clojure@13.0
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: DeLaGuardo/setup-clojure@13.7.0
         with:
           cli: latest
 
-      # Gate BEFORE the bump: a published pom is immutable, so a red suite
-      # must not be able to mint a version, tag it and ship it.
+      - uses: actions/cache@v5
+        with:
+          path: ~/.m2/repository
+          key: m2-${{ runner.os }}-${{ hashFiles('deps.edn') }}
+          restore-keys: m2-${{ runner.os }}-
+
+      # Gate before the bump: a red suite must not mint, tag or ship a version.
       # Unit suite only: the integration suite wants melt on PATH.
       - name: Test
         run: clojure -M:test unit
@@ -39,23 +55,25 @@ jobs:
       - name: Bump patch version
         run: clojure -T:build bump :level :patch
 
+      - name: Regenerate changelog
+        run: clojure -T:build changelog
+
       - name: Commit and tag
         run: |
+          set -euo pipefail
           VER=$(cat VERSION)
           git config user.name  "hive-ci"
           git config user.email "ci@hive-agi.local"
-          git add VERSION
+          git add VERSION CHANGELOG.md
           # [skip ci] stops this push from retriggering the workflow.
           git commit -m "chore(release): $VER [skip ci]"
-          # Annotated: `git push --follow-tags` ignores lightweight tags,
-          # which would publish the artifact and silently drop the tag.
+          # Annotated: `git push --follow-tags` ignores lightweight tags.
           git tag -a "v$VER" -m "release $VER"
           git push --follow-tags
 
       - name: Deploy
         env:
-          # The hive-agi org secret is CLOJARS_DEPLOY_TOKEN, while deps-deploy
-          # and build.clj both read CLOJARS_PASSWORD. Map one onto the other.
+          # deps-deploy reads CLOJARS_PASSWORD; the org secret is CLOJARS_DEPLOY_TOKEN.
           CLOJARS_USERNAME: ${{ secrets.CLOJARS_USERNAME }}
           CLOJARS_PASSWORD: ${{ secrets.CLOJARS_DEPLOY_TOKEN }}
         run: clojure -T:build deploy
