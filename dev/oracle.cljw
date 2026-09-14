@@ -1,0 +1,40 @@
+;; Cross-host byte oracle — the ClojureWasm leg.
+;;
+;;   cljw -cp src:test dev/oracle.cljw
+;;
+;; Emits THE canonical document (hive-kdenlive.oracle.document, the same
+;; namespace the JVM suite and the cljrs runner load) and compares the result
+;; byte-for-byte against dev/oracle/expected.mlt, which the JVM wrote.
+;;
+;; This replaces hand-transcribed expectations. dev/portability.cljw still
+;; mirrors the JVM's example assertions by hand and can drift from them; this
+;; file cannot, because there is exactly one artifact and this host either
+;; reproduces it or it does not.
+;;
+;; Exits non-zero on divergence, after printing a unified diff of the first
+;; differing line — produced by the SAME comparator all three hosts use, so a
+;; divergence reads identically wherever it is found.
+;;
+;; Run from the repository root: the fixture path is relative to it.
+
+(require '[hive-kdenlive.oracle.document :as oracle])
+
+(println "== hive-kdenlive byte oracle, on ClojureWasm ==")
+
+(def expected (slurp oracle/expected-path))
+
+(def result (oracle/check expected))
+
+(println "  fixture " oracle/expected-path (count expected) "bytes")
+(println "  emitted " (:bytes result) "bytes")
+
+(if (:ok? result)
+  (println "  OK     emission is byte-identical to the JVM fixture")
+  (do (println "  FAIL   emission diverges from the JVM fixture")
+      (println (:report result))))
+
+(println (if (:ok? result)
+           "byte oracle: cljw agrees with the JVM"
+           "byte oracle: cljw DISAGREES with the JVM"))
+
+(when-not (:ok? result) (System/exit 1))
