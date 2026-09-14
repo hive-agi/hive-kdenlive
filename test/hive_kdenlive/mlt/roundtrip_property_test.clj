@@ -68,8 +68,9 @@
   (gen/frequency [[5 gen-plain-char] [3 gen-escapable-char]]))
 
 (def ^:private gen-text
-  "A NON-EMPTY string: the empty text node is outside the representable subset."
-  (gen/fmap str/join (gen/vector gen-char 1 12)))
+  "A string, possibly EMPTY. The empty text node round-trips since the parser
+   reads a paired tag with nothing inside as [\"\"] (card 70225bce)."
+  (gen/fmap str/join (gen/vector gen-char 0 12)))
 
 (def ^:private gen-attr-value
   "An attribute value, possibly empty -- empty attributes DO round-trip."
@@ -316,15 +317,20 @@
       (is (= "7" (xml/attr (first (xml/children (:ok (round-trip doc)) "producer"))
                            "id"))))))
 
-(deftest empty-text-value-is-not-byte-stable-test
-  (testing "a <property> with an empty value loses the empty text node"
+(deftest empty-text-value-round-trips-test
+  ;; This test pinned a defect until 2026-09-13: <property name="resource"></property>
+  ;; parsed to :content [] and re-emitted self-closed, so neither law held.
+  (testing "a <property> with an empty value keeps its paired tag"
     (let [doc  (model/document (model/producer "" :id "p0"))
           out  (model/emit doc)
           back (:ok (model/parse out))]
       (is (str/includes? out "<property name=\"resource\"></property>"))
-      (is (str/includes? (model/emit back) "<property name=\"resource\"/>")
-          "the re-emit self-closes: emit is NOT byte-stable here")
-      (is (false? (value-law doc)))
-      (is (false? (byte-law doc)))
-      (testing "but it settles after one round-trip"
-        (is (true? (fixpoint-law doc)))))))
+      (is (= out (model/emit back)))
+      (is (true? (value-law doc)))
+      (is (true? (byte-law doc)))))
+  (testing "and a self-closed element stays self-closed, with no content"
+    (let [parsed (:ok (xml/parse "<a><b/><c></c></a>"))]
+      (is (= [{:tag "b" :attrs [] :content []} {:tag "c" :attrs [] :content [""]}]
+             (:content parsed)))
+      (is (str/includes? (xml/emit parsed) "<b/>"))
+      (is (str/includes? (xml/emit parsed) "<c></c>")))))

@@ -191,6 +191,14 @@
 (declare read-element)
 
 (defn- read-content
+  "Content of an element opened with a paired tag, up to its close tag.
+
+   A paired tag with nothing inside reads as ONE EMPTY TEXT RUN, [\"\"], not as
+   no content. That is what keeps <a></a> and <a/> apart: emission writes [\"\"]
+   as a paired tag and [] as a self-closed one, so both survive a round-trip
+   byte for byte. An MLT <property> with an empty value is legal (it clears an
+   inherited property), and reading one in and writing it back must not turn
+   it into a different spelling."
   [s i tag]
   (loop [i i content []]
     (let [c (char-at s i)]
@@ -200,10 +208,11 @@
 
         (str/starts-with? (subs s i (min (count s) (+ i 2))) "</")
         (let [[close j] (read-name s (+ i 2))
-              j         (skip-ws s j)]
+              j         (skip-ws s j)
+              content   (normalize-content content)]
           (when-not (= close tag) (fail i (str "mismatched close tag " close " for " tag)))
           (when-not (= (char-at s j) \>) (fail j "expected > in close tag"))
-          [(normalize-content content) (inc j)])
+          [(if (empty? content) [""] content) (inc j)])
 
         (str/starts-with? (subs s i (min (count s) (+ i 4))) "<!--")
         (recur (skip-past s i "-->") content)
