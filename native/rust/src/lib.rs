@@ -457,6 +457,22 @@ pub unsafe extern "C" fn cljrs_init(registry: *mut Registry) {
         }),
     );
 
+    // (stdin-line) -> the next line of standard input without its newline, or
+    // nil at end of input. clojurust has no reader over stdin, and the sidecar
+    // (native_sidecar.cljrs) speaks one EDN request per line on it.
+    reg.define_in(
+        ns,
+        "stdin-line",
+        wrap_fn0("stdin-line", || {
+            let mut line = String::new();
+            match std::io::stdin().read_line(&mut line) {
+                Ok(0) => Ok::<Option<String>, String>(None),
+                Ok(_) => Ok(Some(line.trim_end_matches(['\n', '\r']).to_string())),
+                Err(e) => Err(format!("stdin: {e}")),
+            }
+        }),
+    );
+
     // The namespace is supplied by this library, not by a source file.
     reg.env().mark_loaded(ns);
 }

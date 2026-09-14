@@ -1,0 +1,70 @@
+(ns hive-kdenlive.native-sidecar
+  "libmlt as a long-lived process a JVM (or anything else) can drive over stdio.
+
+   The JVM addon renders by running `melt`, one process per render. This
+   sidecar is the other shape: one clojurust process holding libmlt, answering
+   one EDN request per line on stdin with one EDN response per line on stdout.
+
+     cd native && cljrs run src/hive_kdenlive/native_sidecar.cljrs
+
+   Requests  {:id any :op :version}
+             {:id any :op :probe  :resource \"path, colour spec or MLT document\"}
+             {:id any :op :render :resource \"...\" :target \"out.mkv\" :opts-json \"{...}\"}
+             {:id any :op :quit}
+   Responses {:id any :ok true  :result \"<the bridge's JSON envelope>\"}
+             {:id any :ok false :error \"...\"}
+
+   The first response-shaped line is {:ready true :mlt \"<json>\"}. A reader
+   must skip anything before it: cljrs prints its own [build-native] line when
+   it loads the cdylib, and that is not part of this protocol.
+
+   The bridge's answers are passed through as JSON TEXT inside the EDN, not
+   re-shaped here. The bridge already says {\"ok\":...} or {\"error\":...}, and a
+   second vocabulary in this process would be a second thing to keep in step.
+
+   Booleans are compared with `=`: on clojurust `true?` answers wrongly once a
+   fn is hot, and a sidecar's loop is hot by the second request.")
+
+(defn- respond [m]
+  (println (pr-str m))
+  (flush))
+
+(defn- answer
+  [{:keys [id op resource target opts-json]}]
+  (case op
+    :version {:id id :ok true :result (hive-kdenlive.native/version)}
+    :probe   (if (string? resource)
+               {:id id :ok true :result (hive-kdenlive.native/probe resource)}
+               {:id id :ok false :error "probe needs :resource, a string"})
+    :render  (if (and (string? resource) (string? target))
+               {:id id :ok true
+                :result (hive-kdenlive.native/render resource target (or opts-json ""))}
+               {:id id :ok false :error "render needs :resource and :target, strings"})
+    {:id id :ok false :error (str "unknown op " (pr-str op) "; one of :version :probe :render :quit")}))
+
+(defn -main [& _]
+  (respond {:ready (= true (hive-kdenlive.native/available?))
+            :mlt   (hive-kdenlive.native/version)})
+  (loop [served 0]
+    (let [line (hive-kdenlive.native/stdin-line)]
+      (if (nil? line)
+        served
+        (let [request (try (read-string line) (catch Exception e {::unreadable (ex-message e)}))]
+          (cond
+            (::unreadable request)
+            (do (respond {:ok false :error (str "unreadable request: " (::unreadable request))})
+                (recur (inc served)))
+
+            (not (map? request))
+            (do (respond {:ok false :error "a request must be an EDN map"})
+                (recur (inc served)))
+
+            (= :quit (:op request))
+            (do (respond {:id (:id request) :ok true :result "bye"})
+                (inc served))
+
+            :else
+            (do (respond (try (answer request)
+                              (catch Exception e
+                                {:id (:id request) :ok false :error (or (ex-message e) "failed")})))
+                (recur (inc served)))))))))
