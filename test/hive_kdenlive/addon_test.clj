@@ -77,6 +77,25 @@
             (call-h {"route" input "params" {}})
             (is (= expected (first @seen)) (str input " -> " expected))))))))
 
+(deftest kdenlive-call-with-a-project-edits-headlessly-test
+  (let [dir     (doto (java.io.File. (System/getProperty "java.io.tmpdir") (str "hk-addon-" (System/nanoTime))) .mkdirs)
+        project (str dir "/cut.hkd.edn")
+        call    (tool-handler "kdenlive_call")]
+    (try
+      (testing "a route answered against a timeline file, created on the first edit"
+        (let [{:keys [ok error]} (call {"route" "timeline/add-track" "params" {"name" "V1"} "project" project})]
+          (is (nil? error))
+          (is (string? (:id ok))))
+        (is (.isFile (java.io.File. project)))
+        (is (.isFile (java.io.File. (str dir "/cut.mlt"))) "the melt-renderable document is written beside it"))
+      (testing "the underscore spelling reaches the same route"
+        (is (= "cut" (get-in (call {"route" "project_info" "project" project}) [:ok :name]))))
+      (testing "a route with no headless meaning says so instead of reaching for HTTP"
+        (is (= :document/unsupported-route (:error (call {"route" "playback/play" "project" project})))))
+      (is (= :kdenlive/bad-params (:error (call {"route" "project/info" "project" 42}))))
+      (finally
+        (doseq [f (reverse (file-seq dir))] (.delete ^java.io.File f))))))
+
 (deftest health-test
   (let [{:keys [status details]} (addon/health (k/addon-ctor {}))]
     (is (= :ok status))

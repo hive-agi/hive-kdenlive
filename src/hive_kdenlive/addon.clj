@@ -9,7 +9,8 @@
             [hive-kdenlive.kdenlive.routes :as routes]
             [hive-kdenlive.mlt.project :as project]
             [hive-kdenlive.render :as render]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [hive-kdenlive.kdenlive.document :as document]))
 
 (def addon-id-value "hive.kdenlive")
 
@@ -35,9 +36,21 @@
              (str/replace-first s "_" "/"))))
 
 (defn- handle-kdenlive-call
-  [{:strs [route params] :as _in}]
-  (if-not (string? route)
+  "One catalog route, answered by the fork over HTTP, or, when `project` names
+   a timeline file, by the headless :document transport. Same route ids, same
+   params either way."
+  [{:strs [route params project] :as _in}]
+  (cond
+    (not (string? route))
     {:error :kdenlive/bad-params :message "route must be a catalog id string"}
+
+    (and (some? project) (not (string? project)))
+    {:error :kdenlive/bad-params :message "project must be a path string"}
+
+    (string? project)
+    (kdenlive/-call (document/document-kdenlive project) (route-id route) (or params {}))
+
+    :else
     (kdenlive/call (route-id route) (or params {}))))
 
 (defn- handle-routes [_]
@@ -75,10 +88,16 @@
                   :required   ["mlt_xml" "out"]}
     :handler     handle-render}
    {:name        "kdenlive_call"
-    :description "Invoke a route of the Kdenlive scripting fork's HTTP transport."
+    :description (str "Invoke a route of the Kdenlive route catalog. Without `project` it goes to the "
+                      "Kdenlive scripting fork over HTTP. With `project` (a path to a .hkd.edn timeline, "
+                      "created on first edit) the same route is answered headlessly: media/import, "
+                      "timeline/add-track, timeline/insert-clip, timeline/insert-space, "
+                      "timeline/zone-extract, project/info, render/start and the reads; an .mlt melt "
+                      "renders is written beside the project after every edit.")
     :inputSchema {:type       "object"
-                  :properties {"route"  {:type "string" :description "catalog id, e.g. project_open"}
-                               "params" {:type "object" :description "route params"}}
+                  :properties {"route"   {:type "string" :description "catalog id, e.g. timeline/insert-clip or project_open"}
+                               "params"  {:type "object" :description "route params, as the fork names them (binId, trackId, position, ...)"}
+                               "project" {:type "string" :description "optional: timeline file for the headless transport"}}
                   :required   ["route"]}
     :handler     handle-kdenlive-call}
    {:name        "routes"
