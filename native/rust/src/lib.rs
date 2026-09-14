@@ -17,7 +17,7 @@
 //! transport uses, so the Clojure side reads one shape and never an errno.
 
 use std::ffi::{CStr, CString, c_void};
-use std::os::raw::{c_char, c_double, c_int};
+use std::os::raw::{c_char, c_int};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -383,7 +383,16 @@ fn call_render(resource: String, target: String, opts_json: String) -> String {
             if timed_out { Err(err("render/timeout", timeout.as_millis() as u64)) } else { Ok(()) }
         }
     };
-    unsafe { (m.consumer_close)(consumer) };
+    // Stop even when the consumer already reports stopped, exactly as melt
+    // does. `is_stopped` turns true when the render loop leaves, not when the
+    // consumer's threads are joined; stop is what joins them. Closing without
+    // it frees a consumer whose encoder thread may still be flushing, and the
+    // NEXT render in the same process then dies intermittently (measured:
+    // SIGFPE in 2 of 4 runs of native_probe, 0 of 8 with this call).
+    unsafe {
+        (m.consumer_stop)(consumer);
+        (m.consumer_close)(consumer);
+    }
     if let Err(e) = outcome {
         return e;
     }
