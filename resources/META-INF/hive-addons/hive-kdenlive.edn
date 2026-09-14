@@ -7,6 +7,7 @@
  :addon/config       {}
  :addon/capabilities #{:tools :health-reporting}
  :addon/dependencies #{}
- :addon/description  "Kdenlive / MLT video editing: portable MLT document core, headless melt rendering, HTTP transport to the Kdenlive scripting fork driven by a route catalog."
- :addon/maturity     :alpha
- :addon/trust-class  :foss}
+ :addon/description  "Kdenlive / MLT video editing: portable MLT document core, headless melt rendering, HTTP transport to the Kdenlive scripting fork driven by a route catalog. Tools: render, kdenlive_call, routes, ping, inspect_project."
+ :addon/maturity     :experimental
+ :addon/trust-class  :foss
+ :addon/lifecycle {:policy :lazy :idle-ms 900000}}

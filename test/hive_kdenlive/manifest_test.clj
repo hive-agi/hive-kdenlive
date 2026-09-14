@@ -6,38 +6,25 @@
    vanished, would all fail at host load time rather than in the suite. That is
    card 20260913211854-2fcb3049.
 
-   Modelled on hive-gimp's manifest_test, minus the lifecycle assertions --
-   `hive-addon.lifecycle.policy` does not exist in hive-addon 1.0.4, the version
-   this repo pins.
+   Modelled on hive-gimp's manifest_test.
 
-   ONE OF THESE TESTS PINS A DEFECT rather than an invariant. The manifest
-   declares
+   Written first against two defects, both since fixed and now asserted fixed:
 
-       :addon/maturity :alpha
+   - the manifest declared :addon/maturity :alpha, which MountSpec's enum
+     ([:beta :dormant :experimental :stable]) does not contain, so
+     `boundary/parse-spec` answered :mount/spec-invalid and schema-validated
+     discovery found ZERO specs for hive.kdenlive while the reflective binding
+     underneath was sound. Now :experimental.
+   - the description named neither `ping` nor `inspect_project`. It now ends
+     with a Tools: list, and `description-claims` maps every published tool.
 
-   and hive-addon 1.0.4's MountSpec schema spells that field
-
-       [:addon/maturity {:optional true :default :experimental}
-        [:enum :beta :dormant :experimental :stable]]
-
-   so `boundary/parse-spec` answers :mount/spec-invalid and
-   `boundary/discover-specs` finds ZERO specs and one error. The reflective
-   binding underneath is sound -- the constructor resolves and builds a correct
-   IAddon, which is what every other test here proves -- but any host that
-   mounts through the schema-validated discovery path skips this addon
-   entirely. The fix is one word in
-   resources/META-INF/hive-addons/hive-kdenlive.edn (`:alpha` ->
-   `:experimental`, or drop the key and take the default); it is not made here
-   because this branch is confined to new files.
-
-   `the-manifest-is-rejected-by-the-mountspec-schema-test` therefore asserts the
-   rejection, with the exact explanation. The day the manifest is fixed that
-   test fails and says so, which is the point: the defect cannot be forgotten
-   and the fix cannot land silently."
+   The lifecycle assertions need hive-addon 1.0.7 or later
+   (hive-addon.lifecycle.policy); the repo pins 1.0.8."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [hive-addon.lifecycle.policy :as policy]
             [hive-addon.mount.boundary :as boundary]
             [hive-addon.protocol :as addon]
             [hive-dsl.result :as r]))
@@ -75,23 +62,18 @@
       (is (not (str/blank? (:addon/init-ns m))))
       (is (not (str/blank? (:addon/init-fn m)))))))
 
-(deftest the-manifest-is-rejected-by-the-mountspec-schema-test
-  ;; See the namespace docstring: this pins a DEFECT. Fixing :addon/maturity
-  ;; makes this test fail, and the fix is to delete this test and assert
-  ;; (r/ok? parsed) instead, the way hive-gimp's manifest_test does.
+(deftest the-manifest-is-a-valid-mount-spec-that-discovery-finds-test
+  ;; This test pinned a defect until 2026-09-13: the manifest declared
+  ;; :addon/maturity :alpha, which MountSpec's enum does not contain, so
+  ;; schema-validated discovery found ZERO specs for hive.kdenlive. Fixed to
+  ;; :experimental; this now asserts the fix and would catch its return.
   (let [parsed (boundary/parse-spec (manifest-text))]
-    (testing "hive-addon 1.0.4 does not accept :alpha as a maturity"
-      (is (false? (r/ok? parsed))
-          "MANIFEST FIXED? swap this test for (is (r/ok? parsed))")
-      (is (= :mount/spec-invalid (:error parsed)))
-      (is (= {:addon/maturity ["should be either :beta, :dormant, :experimental or :stable"]}
-             (:explanation parsed)))
-      (is (= :alpha (:addon/maturity (manifest)))))
-    (testing "so schema-validated discovery skips this addon entirely"
+    (is (r/ok? parsed) (pr-str (:explanation parsed)))
+    (is (= :experimental (:addon/maturity (manifest))))
+    (testing "schema-validated discovery mounts it, once, with no error for this file"
       (let [{:keys [specs errors]} (boundary/discover-specs)]
-        (is (empty? (filter #(= "hive.kdenlive" (:addon/id %)) specs)))
-        (is (= 1 (count (filter #(str/includes? (str (:url %)) "hive-kdenlive.edn")
-                                errors))))))))
+        (is (= 1 (count (filter #(= "hive.kdenlive" (:addon/id %)) specs))))
+        (is (empty? (filter #(str/includes? (str (:url %)) "hive-kdenlive.edn") errors)))))))
 
 ;; ------------------------------------- the binding the manifest declares
 
@@ -149,18 +131,17 @@
 ;; ------------------------------- what the description advertises, and does not
 
 (def description-claims
-  "tool name -> the phrase in :addon/description that advertises it, or nil when
-   the description does not mention that surface at all.
+  "tool name -> the phrase in :addon/description that advertises it.
 
-   Unlike hive-gimp's manifest, this description is prose rather than a
-   parenthesised tool list, so the correspondence has to be written down. Doing
-   so is what makes drift detectable: rename a tool or reword the description
-   and one of the two assertions below fails."
+   Written down rather than derived, so drift is detectable: rename a tool or
+   reword the description and one of the assertions below fails. Every
+   published tool is advertised since 2026-09-13, when the description gained
+   its Tools: list."
   {"render"          "headless melt rendering"
    "kdenlive_call"   "HTTP transport to the Kdenlive scripting fork"
    "routes"          "route catalog"
-   "ping"            nil
-   "inspect_project" nil})
+   "ping"            "ping"
+   "inspect_project" "inspect_project"})
 
 (deftest the-description-advertises-only-tools-that-exist-test
   (let [description (:addon/description (manifest))]
@@ -172,15 +153,10 @@
         (is (str/includes? description phrase)
             (str "the description no longer advertises " tool))))))
 
-(deftest the-description-under-advertises-two-published-tools-test
-  ;; A second pinned gap, same shape as the maturity one. `ping` and
-  ;; `inspect_project` are published but named nowhere in :addon/description, so
-  ;; a host listing addons by description under-reports this one. Proposed edit,
-  ;; not made here because this branch is confined to new files: append
-  ;; " Tools: render, kdenlive_call, routes, ping, inspect_project." to
-  ;; :addon/description, then move those two entries of `description-claims`
-  ;; off nil and delete this test.
-  (let [unadvertised (set (keep (fn [[tool phrase]] (when (nil? phrase) tool))
-                                description-claims))]
-    (is (= #{"ping" "inspect_project"} unadvertised)
-        "DESCRIPTION FIXED? move the tool off nil in description-claims")))
+(deftest the-lifecycle-resolves-to-lazy-with-a-fifteen-minute-idle-test
+  (let [m (manifest)]
+    (is (= {:policy :lazy :idle-ms 900000} (policy/resolve-lifecycle m nil nil)))
+    (testing "no surface is declared, so a host learns it from the first mount"
+      (is (nil? (:addon/surface m))))
+    (testing "a host override still wins over the manifest"
+      (is (= :pinned (:policy (policy/resolve-lifecycle m nil {:policy :pinned})))))))

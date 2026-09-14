@@ -5,7 +5,7 @@
  ;; hive-addon is the host-neutral IAddon contract for the addon wiring only;
  ;; the portable namespaces never require it.
  :deps {org.clojure/clojure {:mvn/version "1.12.5"}
-        io.github.hive-agi/hive-addon {:mvn/version "1.0.4"}}
+        io.github.hive-agi/hive-addon {:mvn/version "1.0.8"}}
 
  :aliases
  {:dev  {:extra-paths ["dev" "test"]
