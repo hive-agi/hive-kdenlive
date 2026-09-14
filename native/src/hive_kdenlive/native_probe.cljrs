@@ -103,4 +103,8 @@
     (println (if (zero? @failures)
                "native bridge verified"
                (str @failures " check(s) failed")))
-    (when-not (zero? @failures) (System/exit 1))))
+    ;; Throw, not System/exit: clojurust resolves no exit primitive, so an exit
+    ;; call would fail with "Unable to resolve symbol" and bury the checks above.
+    ;; An unhandled ex-info exits non-zero on its own.
+    (when-not (zero? @failures)
+      (throw (ex-info (str "native bridge: " @failures " check(s) failed") {:failures @failures})))))

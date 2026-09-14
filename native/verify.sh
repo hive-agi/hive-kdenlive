@@ -29,6 +29,15 @@ fi
 
 fail=0
 
+# Emission before rendering: the byte oracle compares the document this host
+# emits against the JVM's expected.mlt. It needs no native library, so a
+# divergence shows up here in seconds instead of as a wrong render later.
+echo "== 0. the document this host emits, byte for byte against the JVM's"
+if ! (cd "$here/.." && "$CLJRS" run dev/oracle.cljrs --src-path src --src-path test); then
+  echo "  FAIL the byte oracle"
+  exit 1
+fi
+
 echo "== 1. the probe, on cljrs (MLT checking MLT)"
 cd "$here"
 if ! "$CLJRS" run src/hive_kdenlive/native_probe.cljrs -- "$out"; then
