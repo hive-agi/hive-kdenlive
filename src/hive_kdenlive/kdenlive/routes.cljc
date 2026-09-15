@@ -14,9 +14,10 @@
    server wraps the payload in, where the C++ names one.
 
    Verified against the scripting fork's route table
-   (kdenlive-mcp/kdenlive-server/src/scripting/routetable.cpp, 2026-09-13):
-   every :method/:path below is registered there. Params use the server's
-   camelCase wire names."
+   (kdenlive-mcp/kdenlive-server/src/scripting/routetable.cpp, 2026-09-13,
+   extended 2026-09-15): every :method/:path below is registered there.
+   Params use the server's camelCase wire names; a {id} path hole is the
+   fork's clipId."
   [;; project
    {:id :project/info :method :get :path "/project"}
    {:id :project/new :method :post :path "/project/new"
@@ -28,10 +29,14 @@
     :params {:required #{:path}} :result "success"}
    {:id :project/undo :method :post :path "/project/undo" :result "success"}
    {:id :project/redo :method :post :path "/project/redo" :result "success"}
+   {:id :project/profile :method :put :path "/project/profile"
+    :params {:required #{:width :height :fpsNum :fpsDen}} :result "success"}
    ;; media bin
    {:id :media/import :method :post :path "/media/import"
     :params {:required #{:paths} :optional #{:folderId}} :result "ids"}
    {:id :media/list :method :get :path "/media"}
+   {:id :media/create-title :method :post :path "/media/titles"
+    :params {:required #{:xml :duration} :optional #{:name :folderId}} :result "id"}
    ;; timeline
    {:id :timeline/tracks :method :get :path "/timeline/tracks"}
    {:id :timeline/add-track :method :post :path "/timeline/tracks"
@@ -49,6 +54,16 @@
     :result "success"}
    {:id :timeline/zone-extract :method :post :path "/timeline/zone/extract"
     :params {:required #{:inFrame :outFrame} :optional #{:liftOnly}}
+    :result "success"}
+   ;; clip properties
+   {:id :clip/opacity :method :put :path "/timeline/clips/{id}/opacity"
+    :params {:required #{:id :opacity}} :result "success"}
+   {:id :clip/volume :method :put :path "/timeline/clips/{id}/volume"
+    :params {:required #{:id :dB}} :result "success"}
+   {:id :clip/audio-fade :method :put :path "/timeline/clips/{id}/audio/fade"
+    :params {:required #{:id :fadeIn :fadeOut}} :result "success"}
+   {:id :clip/transform-keyframe :method :post :path "/timeline/clips/{id}/transform/keyframes"
+    :params {:required #{:id :frame :x :y :width :height} :optional #{:opacity}}
     :result "success"}
    ;; effects — the server reads clipId/effectId from the BODY; {id} in the
    ;; path is vestigial but registered, so :id is required too
@@ -95,8 +110,10 @@
 
 (defn request
   "Build a request map from a route id and call params.
-   Returns {:ok {:method :get|:post :path string :body map-or-nil}}
-   or {:error :routes/unknown-route | :routes/missing-params ...}."
+   Returns {:ok {:method :get|:post|:put|:delete :path string :body map-or-nil}}
+   or {:error :routes/unknown-route | :routes/missing-params ...}.
+   :post and :put carry the params as the body: the fork reads PUT bodies too
+   (/project/profile, /timeline/clips/{id}/opacity)."
   [id params]
   (if-let [entry (route id)]
     (let [params  (or params {})
@@ -105,5 +122,5 @@
         {:error :routes/missing-params :route id :missing (vec missing)}
         {:ok {:method (:method entry)
               :path   (fill-path (:path entry) params)
-              :body   (when (= :post (:method entry)) params)}}))
+              :body   (when (contains? #{:post :put} (:method entry)) params)}}))
     {:error :routes/unknown-route :route id}))

@@ -153,3 +153,111 @@
     (testing "the project reader sees the same bin"
       (is (= #{"/m/a.mkv" "/m/b.mkv" "/m/c.mkv" "black"}
              (set (map :resource (:bin (:ok (project/summarize text))))))))))
+
+(defn- doc-node
+  "The parsed MLT document for STATE."
+  [state]
+  (:ok (xml/parse (model/emit (tl/->document state)))))
+
+(defn- props
+  "Property name -> text of a filter/transition node."
+  [node]
+  (into {} (map (fn [p] [(xml/attr p "name") (xml/text p)])) (xml/children node "property")))
+
+(defn- entry-filters
+  "[filter props with in/out] nested in the entries of playlist `track<id>`."
+  [state track-id]
+  (let [pl (first (filter #(= (str "track" track-id) (xml/attr % "id")) (xml/children (doc-node state) "playlist")))]
+    (vec (mapcat (fn [e] (map (fn [f] (assoc (props f) :in (xml/attr f "in") :out (xml/attr f "out")))
+                              (xml/children e "filter")))
+                 (xml/children pl "entry")))))
+
+(deftest profile-sets-size-rate-and-a-matching-aspect
+  (let [[s _] (run (tl/new-project "p") :project/profile {:width 1080 :height 1920 :fpsNum 30 :fpsDen 1})
+        [_ info] (run s :project/info {})
+        profile (first (xml/children (doc-node s) "profile"))]
+    (is (= {:width 1080 :height 1920 :fps 30} (select-keys info [:width :height :fps])))
+    (is (= ["9" "16" "30" "1"] (mapv #(xml/attr profile %) ["display_aspect_num" "display_aspect_den"
+                                                           "frame_rate_num" "frame_rate_den"])))
+    (let [[s _] (run s :project/profile {:width 1920 :height 1080 :fpsNum 30000 :fpsDen 1001})]
+      (is (= [30000 1001] (get-in s [:profile :fps]))))
+    (is (= :project/bad-profile (refuse s :project/profile {:width 0 :height 1920 :fpsNum 30 :fpsDen 1})))))
+
+(deftest import-counts-lengths-at-the-project-rate
+  (testing "a probe that reports its own rate is converted, rounding down"
+    (let [ctx {:probe (fn [_] {:length 75 :fps [25 1]})}
+          s   (:state (:ok (tl/apply-verb (tl/new-project) :project/profile {:width 1080 :height 1920 :fpsNum 30 :fpsDen 1} {})))
+          {:keys [ok]} (tl/apply-verb s :media/import {:paths ["/m/tone.wav"]} ctx)]
+      (is (= 90 (get-in ok [:state :bin "1" :length])))))
+  (is (= 90 (tl/at-project-rate 75 [25 1] 30)))
+  (is (= 29 (tl/at-project-rate 30 [30 1] [30000 1001])) "never a frame the source lacks")
+  (is (= 50 (tl/at-project-rate 50 nil 30)) "no rate: already the project's"))
+
+(deftest titles-are-kdenlive-title-producers
+  (let [[s {t :id}] (run (tl/new-project) :media/create-title {:text "Any video." :duration 45 :size 120 :weight 700})
+        [s {x :id}] (run s :media/create-title {:xml "<kdenlivetitle/>" :duration 10 :name "raw"})
+        prods (into {} (map (fn [p] [(xml/attr p "id") (props p)])) (xml/children (doc-node s) "producer"))
+        title (get prods (str "bin" t))]
+    (is (= "kdenlivetitle" (get title "mlt_service")))
+    (is (= "45" (get title "length")))
+    (is (str/includes? (get title "xmldata") "Any video."))
+    (is (str/includes? (get title "xmldata") "font-weight=\"75\"") "CSS 700 is stored as Qt5 bold")
+    (is (= "<kdenlivetitle/>" (get-in prods [(str "bin" x) "xmldata"])) "xml is taken as given")
+    (is (= :title/bad-duration (refuse s :media/create-title {:text "x" :duration 0})))
+    (is (= :title/xml-or-text-required (refuse s :media/create-title {:duration 10})))))
+
+(deftest effects-are-filters-in-the-entry-with-clip-relative-windows
+  (let [{:keys [state a v]} (base)
+        ;; a is 50 frames; place frames 10..39 so source frames differ from clip frames
+        [s {c :id}] (run state :timeline/insert-clip {:binId a :trackId v :position 0 :in 10 :out 39})
+        [s _] (run s :clip/append-effect {:id c :clipId c :effectId "fade_from_black" :params {:duration 5}})
+        [s _] (run s :clip/append-effect {:id c :clipId c :effectId "fade_to_black" :params {"duration" "10" "alpha" "true"}})
+        [s _] (run s :clip/append-effect {:id c :clipId c :effectId "sepia" :params {:u 75}})
+        fs    (entry-filters s v)]
+    (testing "in/out are source frames: the clip's in plus the window"
+      (is (= [["brightness" "10" "14"] ["brightness" "30" "39"] ["sepia" "10" "39"]]
+             (mapv (juxt #(get % "mlt_service") :in :out) fs))))
+    (testing "Kdenlive's fades: level ramps from black, alpha ramps to transparent"
+      (is (= {"level" "0=0;-1=1" "alpha" "1"} (select-keys (first fs) ["level" "alpha"])))
+      (is (= {"level" "1" "alpha" "0=1;-1=0"} (select-keys (second fs) ["level" "alpha"]))))
+    (is (= "75" (get (nth fs 2) "u")) "a raw service keeps its params")
+    (is (= :effect/bad-duration (refuse s :clip/append-effect {:id c :effectId "fade_from_black" :params {:duration 31}})))
+    (is (= :timeline/no-such-clip (refuse s :clip/append-effect {:id "99" :effectId "sepia"})))
+    (is (= :effect/id-required (refuse s :clip/append-effect {:id c})))))
+
+(deftest transform-opacity-volume-and-audio-fades
+  (let [{:keys [state a v]} (base)
+        [s {c :id}] (run state :timeline/insert-clip {:binId a :trackId v :position 0})
+        [s _] (run s :clip/transform-keyframe {:id c :frame 49 :x 540 :y 0 :width 1920 :height 1080})
+        [s _] (run s :clip/transform-keyframe {:id c :frame 0 :x 0 :y 0 :width 1920 :height 1080 :opacity 0.5})
+        [s _] (run s :clip/transform-keyframe {:id c :frame 0 :x 10 :y 0 :width 1920 :height 1080})
+        [s _] (run s :clip/volume {:id c :dB -6})
+        [s _] (run s :clip/audio-fade {:id c :fadeIn 5 :fadeOut 10})
+        fs    (entry-filters s v)
+        by    (group-by #(get % "mlt_service") fs)]
+    (is (= "0=10 0 1920 1080 1;49=540 0 1920 1080 1" (get (first (get by "qtblend")) "rect"))
+        "sorted by frame; a second keyframe at a frame replaces the first")
+    (is (= [["0" "1" "0" "4"] ["1" "0" "40" "49"]]
+           (mapv (juxt #(get % "gain") #(get % "end") :in :out) (filter #(get % "gain") (get by "volume")))))
+    (is (= "-6" (get (first (filter #(get % "level") (get by "volume"))) "level")))
+    (testing "opacity alone is a whole-frame transform"
+      (let [[s2 {c2 :id}] (run state :timeline/insert-clip {:binId a :trackId v :position 0})
+            [s2 _] (run s2 :clip/opacity {:id c2 :opacity 0.25})]
+        (is (= "0 0 1920 1080 0.25" (get (first (entry-filters s2 v)) "rect")))))
+    (is (= :clip/bad-keyframe-frame (refuse s :clip/transform-keyframe {:id c :frame 50 :x 0 :y 0 :width 1 :height 1})))
+    (is (= :clip/bad-opacity (refuse s :clip/opacity {:id c :opacity 2})))
+    (is (= :clip/bad-fade (refuse s :clip/audio-fade {:id c :fadeIn 30 :fadeOut 30})))))
+
+(deftest every-track-is-composited-and-mixed
+  (let [{:keys [state a b v]} (base)
+        [s {v2 :id}] (run state :timeline/add-track {:name "V2"})
+        [s {a1 :id}] (run s :timeline/add-track {:name "A1" :isAudio true})
+        tractor (first (xml/children (doc-node s) "tractor"))
+        ts      (mapv props (xml/children tractor "transition"))]
+    (testing "a qtblend per VIDEO track, onto the background: without it the top track replaces what is under it"
+      (is (= [["0" "1"] ["0" "2"]]
+             (mapv (juxt #(get % "a_track") #(get % "b_track")) (filter #(= "qtblend" (get % "mlt_service")) ts)))))
+    (testing "a mix per track: without it only the top track is heard"
+      (is (= [["0" "1"] ["0" "2"] ["0" "3"]]
+             (mapv (juxt #(get % "a_track") #(get % "b_track")) (filter #(= "mix" (get % "mlt_service")) ts))))
+      (is (every? #(= "1" (get % "sum")) (filter #(= "mix" (get % "mlt_service")) ts))))))

@@ -37,9 +37,24 @@
                            (when producer (xml/children producer "property")))]
     (when length (parse-long length))))
 
+(defn profile-fps
+  "[num den] of the <profile> in melt's XML description, or nil. The length
+   melt reports is counted at THIS rate, which melt picks from the file (a
+   30 fps video) or defaults (25 fps for audio and images), not the project's."
+  [melt-xml]
+  (let [{:keys [ok]} (xml/parse melt-xml)
+        profile      (when ok (first (xml/children ok "profile")))
+        num          (some-> profile (xml/attr "frame_rate_num") parse-long)
+        den          (some-> profile (xml/attr "frame_rate_den") parse-long)]
+    (when (and num den (pos? num) (pos? den)) [num den])))
+
 (defn melt-probe
-  "A :probe for the timeline: path -> {:length frames} | {:error ...}, read
-   from melt's own description of the file (`melt <file> -consumer xml`)."
+  "A :probe for the timeline: path -> {:length frames :fps [num den]} |
+   {:error ...}, read from melt's own description of the file
+   (`melt <file> -consumer xml`). :fps is the rate :length is counted at; the
+   timeline converts it to the project's.
+   Spawned through render/run-process, so an image melt reads with its Qt
+   producer probes the same with no display as the render will."
   ([] (melt-probe (render/which "melt")))
   ([melt-bin]
    (fn [path]
@@ -47,14 +62,12 @@
        (nil? melt-bin) {:error :media/melt-not-found}
        (not (.isFile (io/file path))) {:error :media/file-not-found :path path}
        :else
-       (let [proc   (.start (ProcessBuilder. ^java.util.List [melt-bin "-quiet" path "-consumer" "xml"]))
-             out    (future (slurp (.getInputStream proc)))
-             _      (slurp (.getErrorStream proc))
-             exit   (.waitFor proc)
-             length (when (zero? exit) (producer-length @out))]
+       (let [{:keys [exit stdout]} (render/run-process [melt-bin "-quiet" path "-consumer" "xml"])
+             length (when (zero? exit) (producer-length stdout))
+             fps    (when (zero? exit) (profile-fps stdout))]
          (cond
            (not (zero? exit)) {:error :media/melt-failed :exit exit :path path}
-           (and length (pos? length)) {:length length}
+           (and length (pos? length)) (cond-> {:length length} fps (assoc :fps fps))
            :else {:error :media/no-length :path path}))))))
 
 ;; ---------------------------------------------------------------------------
@@ -96,7 +109,9 @@
     (str/blank? (str outputFile)) {:error :render/output-required}
     (zero? (timeline/duration state)) {:error :render/empty-timeline}
     :else
-    (let [{:keys [ok error] :as res} (render/render-doc! (timeline/->document state) (str outputFile))]
+    (let [out (str outputFile)
+          {:keys [ok error] :as res} (render/render-doc! (timeline/->document state) out
+                                                         :extra (render/encoding-for out))]
       (if error
         res
         {:ok {:success true :outputFile (:out ok) :frames (timeline/duration state) :project path}}))))
@@ -109,10 +124,14 @@
       (if (= :render/start route-id)
         (render-start path state params)
         (let [{:keys [ok error] :as res} (timeline/apply-verb state route-id params {:probe probe})]
-          (if error
-            res
-            (do (when-not (= state (:state ok)) (write-state! path (:state ok)))
-                {:ok (:result ok)})))))))
+          (cond
+            error res
+            ;; A verb that answers neither :ok nor :error is a defect. Writing
+            ;; its nil state would replace the project on disk with `nil`,
+            ;; which happened once while adding verbs.
+            (not (map? (:state ok))) {:error :document/verb-returned-no-state :route route-id :answer res}
+            :else (do (when-not (= state (:state ok)) (write-state! path (:state ok)))
+                      {:ok (:result ok)})))))))
 
 (defn document-kdenlive
   "An IKdenlive over the timeline at PATH (created on its first edit). PROBE

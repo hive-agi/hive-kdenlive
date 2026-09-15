@@ -13,7 +13,8 @@
    Builders return xml.cljc nodes; `document` assembles and `xml/emit`
    serializes. No IO, no host conditionals — core + string only."
   (:refer-clojure :exclude [filter])
-  (:require [hive-kdenlive.mlt.xml :as xml]))
+  (:require [hive-kdenlive.mlt.xml :as xml]
+            [clojure.string :as str]))
 
 (def mlt-version
   "MLT version stamped on emitted documents."
@@ -57,9 +58,13 @@
 ;; Playlists — tracks
 
 (defn entry
-  "A playlist <entry> referencing producer `id`, optionally cut by :in/:out."
-  [id & {:keys [in out] :as _opts}]
-  (xml/element "entry" [["producer" id] ["in" in] ["out" out]]))
+  "A playlist <entry> referencing producer `id`, optionally cut by :in/:out.
+   :filters (filter nodes) are nested inside the entry, so they act on this
+   cut only. A nested filter's keyframes count from ITS OWN in, and its in/out
+   are source frames like the entry's: give it in/out or its keyframes are
+   read as source positions (measured 2026-09-15, melt 7.22)."
+  [id & {:keys [in out filters] :as _opts}]
+  (apply xml/element "entry" [["producer" id] ["in" in] ["out" out]] (vec filters)))
 
 (defn blank
   "A <blank length=\"n\"/> gap in a playlist."
@@ -125,6 +130,91 @@
                   ["display_aspect_den" (str (second dar))]
                   ["frame_rate_num" (str num)] ["frame_rate_den" (str den)]
                   ["colorspace" (str colorspace)]])))
+
+(defn- gcd [a b] (if (zero? b) a (recur b (mod a b))))
+
+(defn aspect
+  "[w h] reduced: the display aspect of square pixels at WIDTH x HEIGHT.
+   A vertical 1080x1920 profile is 9:16; the profile default of 16:9 would
+   tell a player to stretch it."
+  [width height]
+  (let [g (gcd width height)] [(quot width g) (quot height g)]))
+
+;; ---------------------------------------------------------------------------
+;; Titles — Kdenlive's own title format, rendered by the kdenlivetitle producer
+
+(def ^:private qt5-weights
+  "CSS weight -> the QFont weight Kdenlive 23 (Qt5) stores in a title. Qt5's
+   scale is 0..99 and bold is 75: a title saying font-weight=\"700\" renders
+   REGULAR (measured 2026-09-15). Callers speak CSS; the title speaks Qt5."
+  [[100 0] [200 12] [300 25] [400 50] [500 57] [600 63] [700 75] [800 81] [900 87]])
+
+(defn qt-weight
+  "The Qt5 weight for a CSS weight (100..900), rounding down to a named step."
+  [css-weight]
+  (let [w (or css-weight 400)]
+    (or (second (last (take-while (fn [[c _]] (<= c w)) qt5-weights))) 0)))
+
+(defn- hex->int [s]
+  (reduce (fn [acc c] (+ (* acc 16) (or (str/index-of "0123456789abcdef" (str c)) 0)))
+          0
+          (str/lower-case s)))
+
+(defn rgba
+  "\"#rrggbb\" or \"#rrggbbaa\" (CSS order, alpha LAST) -> \"r,g,b,a\", the
+   colour spelling of a Kdenlive title. Not MLT's #AARRGGBB, where alpha comes
+   first and \"#ff0000ff\" is opaque blue."
+  [colour]
+  (let [hex (str/replace (str colour) "#" "")
+        hex (if (= 6 (count hex)) (str hex "ff") hex)]
+    (str/join "," (map (fn [i] (hex->int (subs hex i (+ i 2)))) [0 2 4 6]))))
+
+(def ^:private qt-align {:left 1 :right 2 :center 4})
+
+(defn title
+  "A <kdenlivetitle> node: one text block on a transparent (or :background)
+   canvas of WIDTH x HEIGHT, FRAMES long. `xml/emit` it for the xmldata of a
+   kdenlivetitle producer.
+
+   opts :text (newlines break lines) :font :size (pixels) :weight (CSS)
+        :color :background (\"#rrggbb[aa]\") :align (:left :center :right)
+        :x :y (top-left of the text box) :box-width
+   Unset :y centres the block vertically, from the line count and 1.25 x size
+   per line; unset :x and :box-width span the canvas, so :align decides."
+  [& {:keys [width height frames text font size weight color background align x y box-width]
+      :or {font "DejaVu Sans" size 96 weight 700 color "#ffffff" background "#00000000"
+           align :center}}]
+  (let [lines  (max 1 (count (str/split-lines (str text))))
+        box-h  (int (* lines size 1.25))
+        x      (or x 0)
+        bw     (or box-width (- width (* 2 x)))
+        y      (or y (quot (- height box-h) 2))
+        view   (str "0,0," width "," height)]
+    (xml/element "kdenlivetitle"
+                 [["duration" (str frames)] ["LC_NUMERIC" "C"] ["width" (str width)]
+                  ["height" (str height)] ["out" (str (dec frames))]]
+                 (xml/element "item" [["type" "QGraphicsTextItem"] ["z-index" "0"]]
+                              (xml/element "position" [["x" (str x)] ["y" (str y)]]
+                                           (xml/element "transform" [] "1,0,0,0,1,0,0,0,1"))
+                              (xml/element "content"
+                                           [["font-color" (rgba color)] ["font" font]
+                                            ["font-pixel-size" (str size)]
+                                            ["font-weight" (str (qt-weight weight))]
+                                            ["font-italic" "0"] ["font-underline" "0"]
+                                            ["alignment" (str (get qt-align (keyword align) 4))]
+                                            ["box-width" (str bw)] ["box-height" (str box-h)]]
+                                           (str text)))
+                 (xml/element "startviewport" [["rect" view]])
+                 (xml/element "endviewport" [["rect" view]])
+                 (xml/element "background" [["color" (rgba background)]]))))
+
+(defn title-producer
+  "A kdenlivetitle <producer> for title XML text, FRAMES long. The resource is
+   empty, as in a Kdenlive project; the title lives in xmldata."
+  [title-xml frames & {:keys [id]}]
+  (producer "" :id id :in "0" :out (str (dec frames))
+            :properties {"length" (str frames) "eof" "pause"
+                         "mlt_service" "kdenlivetitle" "xmldata" title-xml}))
 
 (defn document
   "Assemble the root <mlt> node. `children` are profile, producers, playlists,

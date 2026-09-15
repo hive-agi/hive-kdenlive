@@ -32,6 +32,44 @@
               (when (.canExecute f) (.getAbsolutePath f))))
           (str/split (or path "") (re-pattern java.io.File/pathSeparator)))))
 
+(defn melt-env
+  "Environment entries a melt process needs so its Qt module loads with no
+   window system, given the current ENV map.
+
+   MLT's Qt module (qtblend, kdenlivetitle, qtext) refuses to load unless
+   DISPLAY or WAYLAND_DISPLAY is set, and then melt still exits 0, rendering
+   the word INVALID where each producer should be and skipping each
+   transition. QT_QPA_PLATFORM=offscreen alone does not help: MLT checks the
+   variable before Qt ever runs. A placeholder DISPLAY plus the offscreen
+   platform renders all three with no X server (measured 2026-09-15, melt
+   7.22). A render never needs a real window, so offscreen is the default even
+   when a display exists; a caller's own QT_QPA_PLATFORM wins."
+  [env]
+  (cond-> {}
+    (str/blank? (get env "QT_QPA_PLATFORM"))
+    (assoc "QT_QPA_PLATFORM" "offscreen")
+
+    (and (str/blank? (get env "DISPLAY")) (str/blank? (get env "WAYLAND_DISPLAY")))
+    (assoc "DISPLAY" ":hive-kdenlive-offscreen")))
+
+(defn load-failures
+  "The lines where melt says it could not create a producer, filter or
+   transition. melt exits 0 after them, so they are the only sign the render
+   is not the document."
+  [stderr]
+  (vec (distinct (map str/trim (re-seq #"[^\r\n]*failed to load[^\r\n]*" (or stderr ""))))))
+
+(defn encoding-for
+  "Consumer arguments for OUT-PATH by extension: H.264 in yuv420p with AAC for
+   .mp4/.mov/.m4v, the combination phones and social players accept, and
+   faststart so playback begins before the download ends. Other extensions
+   get melt's own choice."
+  [out-path]
+  (if (re-find #"(?i)\.(mp4|mov|m4v)$" (str out-path))
+    ["vcodec=libx264" "pix_fmt=yuv420p" "crf=18" "preset=medium"
+     "acodec=aac" "ab=192k" "movflags=+faststart"]
+    []))
+
 ;; ---------------------------------------------------------------------------
 ;; Port
 
@@ -43,13 +81,19 @@
 ;; ---------------------------------------------------------------------------
 ;; Boundary
 
-(defn- run-process
+(defn run-process
+  "Run ARGV with melt-env added to the inherited environment.
+   {:exit :stdout :stderr}; both streams are drained concurrently, so a chatty
+   melt cannot block on a full pipe."
   [argv]
-  (let [proc    (.start (ProcessBuilder. ^java.util.List argv))
-        out     (slurp (.getInputStream proc))
-        err     (slurp (.getErrorStream proc))
+  (let [pb      (ProcessBuilder. ^java.util.List argv)
+        penv    (.environment pb)
+        _       (doseq [[k v] (melt-env (into {} (System/getenv)))] (.put penv k v))
+        proc    (.start pb)
+        out     (future (slurp (.getInputStream proc)))
+        err     (future (slurp (.getErrorStream proc)))
         exit    (.waitFor proc)]
-    {:exit exit :stdout out :stderr err}))
+    {:exit exit :stdout @out :stderr @err}))
 
 (defrecord MeltRenderer [bin]
   IRender
@@ -57,10 +101,12 @@
     (if-not bin
       {:error :render/melt-not-found :message "melt is not on PATH"}
       (let [argv (apply melt-argv bin mlt-path out-path (mapcat identity opts))
-            {:keys [exit stderr]} (run-process argv)]
-        (if (zero? exit)
-          {:ok {:out out-path :argv argv}}
-          {:error :render/melt-failed :exit exit :stderr stderr})))))
+            {:keys [exit stderr]} (run-process argv)
+            failures (load-failures stderr)]
+        (cond
+          (not (zero? exit)) {:error :render/melt-failed :exit exit :stderr stderr}
+          (seq failures)     {:error :render/unloadable :failures failures :out out-path :argv argv}
+          :else              {:ok {:out out-path :argv argv}})))))
 
 (defn melt-renderer
   "A MeltRenderer bound to the melt on PATH (explicit `bin` overrides)."
