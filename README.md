@@ -98,9 +98,18 @@ clojure -M:test                                         # 87 tests: unit + real 
 cljw -cp src dev/portability.cljw                       # mlt.* on ClojureWasm
 cljw -cp src:test dev/oracle.cljw                       # byte oracle: cljw emission == JVM fixture, 200 passes
 cljrs run dev/oracle.cljrs --src-path src --src-path test   # same, clojurust
+bash dev/verify_portability.sh                         # both byte oracles, sequentially; no builds
 cljrs run --src-path src dev/timeline_portability.cljc  # headless timeline, 60 passes (also cljw / JVM)
 native/build.sh && native/verify.sh                     # libmlt from cljrs, checked by ffprobe and pixel samples
 ```
+
+The combined runner uses existing binaries from `PATH`; set `CLJW` and `CLJRS`
+to select a particular checkout's build. It runs each host at lower priority,
+with a 120-second timeout, and prints the directory containing full logs and
+`results.tsv` (binary path, SHA-256, version, status, exit code, elapsed time).
+Set `PORTABILITY_TIMEOUT` or `PORTABILITY_REPORT_DIR` to override those defaults;
+pass `cljw` or `cljrs` to run only that host. Missing binaries, timeouts, and
+oracle failures all produce a nonzero exit. No runtime or native library is built.
 
 ## Measured along the way
 
