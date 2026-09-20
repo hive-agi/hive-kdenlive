@@ -15,9 +15,13 @@
 
    Verified against the scripting fork's route table
    (kdenlive-mcp/kdenlive-server/src/scripting/routetable.cpp, 2026-09-13,
-   extended 2026-09-15): every :method/:path below is registered there.
-   Params use the server's camelCase wire names; a {id} path hole is the
-   fork's clipId."
+   extended 2026-09-15, re-read 2026-09-20): every :method/:path below is
+   registered there. Params use the server's camelCase wire names; a {id}
+   path hole is the fork's clipId.
+
+   A row declares what a CALLER may send, which is not always what the fork
+   binds: see :timeline/insert-clip, where the headless transport accepts two
+   params the HTTP one has to reach by a second call."
   [;; project
    {:id :project/info :method :get :path "/project"}
    {:id :project/new :method :post :path "/project/new"
@@ -45,8 +49,18 @@
     :params {:required #{:id}} :result "success"}
    {:id :timeline/track-clips :method :get :path "/timeline/tracks/{id}/clips"
     :params {:required #{:id}} :result "clips"}
+   ;; insert-clip: :in and :out trim the clip as it is placed, and the two
+   ;; transports reach that differently. The headless document implements
+   ;; them directly (mlt.timeline/insert-clip passes them to `place`). The
+   ;; fork does NOT: scriptInsertClip binds binId, trackId and position and
+   ;; nothing else, and httpsession.cpp reads only declared params, so extra
+   ;; body keys are neither used nor rejected. They are declared OPTIONAL
+   ;; here because a caller may legitimately send them, and kdenlive.client
+   ;; turns them into a following :clip/resize so both transports answer the
+   ;; same timeline. Dropping them silently is what must never happen again.
    {:id :timeline/insert-clip :method :post :path "/timeline/clips"
-    :params {:required #{:binId :trackId :position}} :result "id"}
+    :params {:required #{:binId :trackId :position} :optional #{:in :out}}
+    :result "id"}
    {:id :timeline/insert-clips-batch :method :post :path "/timeline/clips/batch"
     :params {:required #{:binIds :trackId :startPosition}} :result "ids"}
    {:id :timeline/insert-space :method :post :path "/timeline/space"
@@ -64,6 +78,17 @@
     :params {:required #{:id :fadeIn :fadeOut}} :result "success"}
    {:id :clip/transform-keyframe :method :post :path "/timeline/clips/{id}/transform/keyframes"
     :params {:required #{:id :frame :x :y :width :height} :optional #{:opacity}}
+    :result "success"}
+   ;; PUT /timeline/clips/{id} is ONE lambda in the fork with two branches:
+   ;; trackId + position moves the clip (scriptMoveClip), duration resizes it
+   ;; (scriptResizeClip, fromRight defaulting true). Two ids here, one path,
+   ;; so a caller states which branch it means instead of relying on which
+   ;; keys it happened to include.
+   {:id :clip/resize :method :put :path "/timeline/clips/{id}"
+    :params {:required #{:id :clipId :duration} :optional #{:fromRight}}
+    :result "duration"}
+   {:id :clip/move :method :put :path "/timeline/clips/{id}"
+    :params {:required #{:id :clipId :trackId :position}}
     :result "success"}
    ;; effects — the server reads clipId/effectId from the BODY; {id} in the
    ;; path is vestigial but registered, so :id is required too
@@ -100,6 +125,31 @@
   [entry params]
   (remove #(contains? params %) (get-in entry [:params :required])))
 
+(defn- path-holes
+  "The {param} holes in a route's path, as keywords. A hole is a declared
+   param even when :params does not repeat it."
+  [entry]
+  (into #{} (map keyword) (re-seq #"(?<=\{)[a-zA-Z]+(?=\})" (or (:path entry) ""))))
+
+(defn declared-params
+  "Every param key `entry` accepts: required, optional and path holes."
+  [entry]
+  (into (path-holes entry)
+        (concat (get-in entry [:params :required])
+                (get-in entry [:params :optional]))))
+
+(defn- undeclared-params
+  "Keys in `params` the route does not declare, sorted.
+
+   A route entry is the single source for its own surface, so a param it does
+   not name must not reach a transport. Silence here is how creator's :in and
+   :out rode along to the fork for weeks: the HTTP body carried them, the
+   fork binds only its own declared params, and nothing on either side said
+   a word."
+  [entry params]
+  (let [declared (declared-params entry)]
+    (sort (remove declared (keys params)))))
+
 (defn- fill-path
   "Substitute {param} holes in `template` from `params` (string values only)."
   [template params]
@@ -111,15 +161,30 @@
 (defn request
   "Build a request map from a route id and call params.
    Returns {:ok {:method :get|:post|:put|:delete :path string :body map-or-nil}}
-   or {:error :routes/unknown-route | :routes/missing-params ...}.
+   or {:error :routes/unknown-route | :routes/missing-params
+              | :routes/undeclared-params ...}.
    :post and :put carry the params as the body: the fork reads PUT bodies too
-   (/project/profile, /timeline/clips/{id}/opacity)."
+   (/project/profile, /timeline/clips/{id}/opacity).
+
+   A param the route does not declare is REFUSED rather than passed along.
+   The body used to be whatever the caller handed over, so a key the fork
+   does not bind was encoded, sent, ignored and never mentioned; that is how
+   an insert-clip trim went missing. The catalog is the single source for a
+   route's surface, and this is where that claim is enforced."
   [id params]
   (if-let [entry (route id)]
-    (let [params  (or params {})
-          missing (seq (missing-params entry params))]
-      (if missing
+    (let [params      (or params {})
+          missing     (seq (missing-params entry params))
+          undeclared  (seq (undeclared-params entry params))]
+      (cond
+        missing
         {:error :routes/missing-params :route id :missing (vec missing)}
+
+        undeclared
+        {:error :routes/undeclared-params :route id :undeclared (vec undeclared)
+         :declared (vec (sort (declared-params entry)))}
+
+        :else
         {:ok {:method (:method entry)
               :path   (fill-path (:path entry) params)
               :body   (when (contains? #{:post :put} (:method entry)) params)}}))

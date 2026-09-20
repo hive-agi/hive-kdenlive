@@ -26,11 +26,12 @@
       (is (string? description))
       (is (= "object" (:type inputSchema)))
       (is (fn? handler)))
-    (is (= #{"render" "kdenlive_call" "routes" "ping" "inspect_project"}
+    (is (= #{"kdenlive_render" "kdenlive_call" "kdenlive_routes"
+             "kdenlive_ping" "kdenlive_inspect_project"}
            (into #{} (map :name) tools)))))
 
 (deftest inspect-project-handler-test
-  (let [inspect-h (tool-handler "inspect_project")]
+  (let [inspect-h (tool-handler "kdenlive_inspect_project")]
     (testing "bad params and missing files are data errors"
       (is (= :kdenlive/bad-params (:error (inspect-h {}))))
       (is (= :kdenlive/file-not-found (:error (inspect-h {"path" "/nope/x.kdenlive"})))))
@@ -50,7 +51,7 @@
           (finally (.delete f)))))))
 
 (deftest render-handler-validation-test
-  (let [render-h (tool-handler "render")]
+  (let [render-h (tool-handler "kdenlive_render")]
     (is (= :kdenlive/bad-params (:error (render-h {"out" "o.mp4"}))))
     (is (= :kdenlive/bad-params (:error (render-h {"mlt_xml" "<mlt/>"}))))))
 
@@ -100,4 +101,7 @@
   (let [{:keys [status details]} (addon/health (k/addon-ctor {}))]
     (is (= :ok status))
     (is (contains? details :melt-on-path?))
-    (is (= 33 (:routes details)))))
+    ;; A literal, so adding or losing a route has to be noticed here. 33 until
+    ;; 2026-09-20, when :clip/resize and :clip/move split the fork's one
+    ;; PUT /timeline/clips/{id} lambda into the two branches it actually has.
+    (is (= 35 (:routes details)))))

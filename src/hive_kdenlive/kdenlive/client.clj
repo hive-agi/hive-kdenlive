@@ -7,37 +7,43 @@
      Boundary  HttpKdenlive          — java.net.http, JSON wire
      Seam      *kdenlive*            — read at call time; rebind in tests
 
-   The wire encoding is JSON; requests carry the route's :body as the JSON
-   object and responses are decoded to Clojure data with keyword keys."
+   The wire encoding is JSON. Requests carry the route's :body as a JSON
+   object, built by `->json` here.
+
+   Responses are NOT decoded. `-call` answers
+   {:ok {:status int :body \"<raw JSON string>\"}}, because this namespace has
+   no JSON reader: `->json` writes, and nothing reads. A caller that needs a
+   field out of the answer (hive-creator's :finish binds [:ids 0] and [:id]
+   to thread ids between steps) therefore cannot use this transport yet; the
+   headless document transport answers parsed data and is what such callers
+   run against today. This docstring previously claimed responses came back
+   \"decoded to Clojure data with keyword keys\", which was never true.
+
+   Tracked as a card: give this transport a JSON reader, and with it the
+   :timeline/insert-clip trim, which the fork cannot do in one call (its
+   scriptInsertClip binds binId/trackId/position only) and which therefore
+   needs a following :clip/resize to match what the headless transport does."
   (:require [clojure.string :as str]
-            [hive-kdenlive.kdenlive.routes :as routes])
+            [hive-kdenlive.kdenlive.routes :as routes]
+            [hive-kdenlive.kdenlive.json :as json])
   (:import [java.net URI]
            [java.net.http HttpClient HttpRequest HttpRequest$BodyPublishers
             HttpResponse$BodyHandlers]
            [java.nio.charset StandardCharsets]
-[java.net.http HttpResponse]))
+           [java.net.http HttpResponse]))
 
 ;; ---------------------------------------------------------------------------
 ;; Wire encoding — minimal JSON, no deps (bodies are flat string/number maps)
 
-(defn- json-escape [s]
-  (-> (str s)
-      (str/replace "\\" "\\\\")
-      (str/replace "\"" "\\\"")
-      (str/replace "\n" "\\n")))
-
 (defn ->json
-  "Encode a flat map as a JSON object string. Values: string/number/boolean."
+  "Encode `m` as JSON. Delegates to `hive-kdenlive.kdenlive.json/write`.
+
+   Kept as a name because callers and tests use it. It used to live here and
+   handled a FLAT map of scalars only, rendering anything else with `str`,
+   which turned `:paths [\"a\" \"b\"]` into a Clojure literal and `:params
+   {...}` into one too. Those are the shapes hive-creator sends."
   [m]
-  (str "{"
-       (str/join "," (map (fn [[k v]]
-                            (str "\"" (json-escape (name k)) "\":"
-                                 (cond
-                                   (string? v)  (str "\"" (json-escape v) "\"")
-                                   (boolean? v) (str v)
-                                   :else        (str v))))
-                          m))
-       "}"))
+  (json/write m))
 
 ;; ---------------------------------------------------------------------------
 ;; Port
@@ -50,36 +56,85 @@
 ;; ---------------------------------------------------------------------------
 ;; Boundary
 
+(defn- answer
+  "The fork's reply as the port's data.
+
+   `:status` and `:body` are kept exactly as they were, so every existing
+   caller and the wire suite still read what they read. What is new is the
+   DECODED payload: the route's `:result` names one wire field, and that field
+   is unwrapped under its own keyword, so a caller binds `[:id]` or `[:ids 0]`
+   here the same way it does against the headless document transport. Before
+   2026-09-20 nothing was decoded at all and those binds answered nil."
+  [route-id status body]
+  (let [parsed (json/read body)
+        result (:result (routes/route route-id))]
+    (cond-> {:status status :body body}
+      (contains? parsed :ok)
+      (assoc :parsed (:ok parsed))
+
+      (and (contains? parsed :ok) (map? (:ok parsed)) result
+           (contains? (:ok parsed) result))
+      (assoc (keyword result) (get (:ok parsed) result)))))
+
+(defn- send!
+  "One request. Split out of `-call` so the insert-clip trim can make two."
+  [{:keys [base-url http-client secret]} route-id params]
+  (let [{:keys [ok error] :as res} (routes/request route-id params)]
+    (if error
+      res
+      (let [builder (-> (HttpRequest/newBuilder)
+                        (.uri (URI/create (str base-url (:path ok)))))
+            builder (case (:method ok)
+                      :get    (.GET builder)
+                      :delete (.DELETE builder)
+                      ;; :post and :put both carry the JSON body
+                      (.method builder
+                               (str/upper-case (name (:method ok)))
+                               (HttpRequest$BodyPublishers/ofString
+                                (->json (:body ok)) StandardCharsets/UTF_8)))
+            builder (.header builder "Content-Type" "application/json")
+            ;; The fork answers 401 without it when KDENLIVE_SCRIPTING_SECRET is set.
+            builder (if (str/blank? secret) builder (.header builder "X-Kdenlive-Secret" secret))
+            ;; The hint is load-bearing. The runtime class is the JDK's
+            ;; package-private HttpResponseImpl, which reflection cannot call
+            ;; methods on: unhinted, (.status resp) threw "No matching field
+            ;; found: status" on every response.
+            ^HttpResponse resp (.send ^HttpClient http-client
+                                      (.build builder)
+                                      (HttpResponse$BodyHandlers/ofString))
+            status  (.statusCode resp)]
+        (if (<= 200 status 299)
+          {:ok (answer route-id status (.body resp))}
+          {:error :kdenlive/http-error :status status :body (.body resp)})))))
+
 (defrecord HttpKdenlive [base-url http-client secret]
   IKdenlive
-  (-call [_ route-id params]
-    (let [{:keys [ok error] :as res} (routes/request route-id params)]
-      (if error
-        res
-        (let [builder (-> (HttpRequest/newBuilder)
-                          (.uri (URI/create (str base-url (:path ok)))))
-              builder (case (:method ok)
-                        :get    (.GET builder)
-                        :delete (.DELETE builder)
-                        ;; :post and :put both carry the JSON body
-                        (.method builder
-                                 (str/upper-case (name (:method ok)))
-                                 (HttpRequest$BodyPublishers/ofString
-                                  (->json (:body ok)) StandardCharsets/UTF_8)))
-              builder (.header builder "Content-Type" "application/json")
-              ;; The fork answers 401 without it when KDENLIVE_SCRIPTING_SECRET is set.
-              builder (if (str/blank? secret) builder (.header builder "X-Kdenlive-Secret" secret))
-              ;; The hint is load-bearing. The runtime class is the JDK's
-              ;; package-private HttpResponseImpl, which reflection cannot call
-              ;; methods on: unhinted, (.status resp) threw "No matching field
-              ;; found: status" on every response.
-              ^HttpResponse resp (.send ^HttpClient http-client
-                                        (.build builder)
-                                        (HttpResponse$BodyHandlers/ofString))
-              status  (.statusCode resp)]
-          (if (<= 200 status 299)
-            {:ok {:status status :body (.body resp)}}
-            {:error :kdenlive/http-error :status status :body (.body resp)}))))))
+  (-call [this route-id params]
+    (let [{:keys [in out]} params]
+      (if (and (= :timeline/insert-clip route-id) (some? in) (some? out))
+        ;; The trim, made to mean the same thing on both transports.
+        ;;
+        ;; The headless document implements :in/:out directly. The fork cannot:
+        ;; its scriptInsertClip binds binId, trackId and position and nothing
+        ;; else, and its HTTP session reads only declared params, so sending
+        ;; them here did nothing and said nothing. The clip is inserted, then
+        ;; resized to the length the caller asked for, which is what
+        ;; PUT /timeline/clips/{id} exists for.
+        (let [inserted (send! this route-id (dissoc params :in :out))]
+          (if (:error inserted)
+            inserted
+            (let [id (get-in inserted [:ok :id])]
+              (if (nil? id)
+                (assoc inserted :warning :kdenlive/trim-skipped
+                       :reason "the insert answered no id, so the clip could not be resized")
+                (let [resized (send! this :clip/resize
+                                     {:id id :clipId id :duration (inc (- out in))})]
+                  (if (:error resized)
+                    resized
+                    ;; Answer the INSERT, so a caller binding [:id] gets the
+                    ;; clip it inserted rather than the resize's duration.
+                    inserted))))))
+        (send! this route-id params)))))
 
 (defn endpoint
   "Where the scripting fork listens, from an environment map, read with the

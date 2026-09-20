@@ -10,7 +10,8 @@
             [hive-kdenlive.mlt.project :as project]
             [hive-kdenlive.render :as render]
             [clojure.string :as str]
-            [hive-kdenlive.kdenlive.document :as document]))
+            [hive-kdenlive.kdenlive.document :as document]
+            [hive-help.core :as help]))
 
 (def addon-id-value "hive.kdenlive")
 
@@ -35,10 +36,99 @@
              s
              (str/replace-first s "_" "/"))))
 
+(defn- id-str
+  "A route id as \"namespace/name\".
+
+   hive-help renders with `name`, which drops a keyword's namespace, so
+   `:project/info` would read as `info` and `:media/list` as `list`. Every id
+   handed to hive-help goes through here first."
+  [id]
+  (if (keyword? id)
+    (str (when (namespace id) (str (namespace id) "/")) (name id))
+    (str id)))
+
+(defn- route-names
+  "Every catalog id as a \"namespace/name\" string, for hive-help to list and
+   to compute suggestions over."
+  []
+  (mapv id-str (map :id routes/catalog)))
+
+(defn- actionable
+  "A routes refusal, rendered so the reader knows what to do next.
+
+   The portable namespaces answer error VALUES and nothing else: `routes` runs
+   on cljw and cljrs, where hive-help does not. Rendering belongs here, at the
+   boundary, which is also the only place that knows a caller is looking at an
+   MCP tool result rather than at a Clojure map.
+
+   Without this, `kdenlive_call` with a mistyped route answered
+   {:error :routes/unknown-route :route :timeline/insert-clips} and left the
+   reader to go and find the catalog."
+  [answer]
+  (case (:error answer)
+    :routes/unknown-route
+    (assoc answer :message
+           (help/unknown-command
+            {:tool           "kdenlive_call"
+             :command        (id-str (:route answer))
+             :valid-commands (route-names)
+             :examples       ["timeline/insert-clip" "project/open" "render/start"]}))
+
+    :routes/undeclared-params
+    (let [{:keys [route undeclared declared]} answer]
+      (assoc answer :message
+             (help/join-lines
+              (str "Route `" (id-str route) "` does not declare "
+                   (str/join ", " (map help/backtick undeclared))
+                   (if (= 1 (count undeclared)) " as a param." " as params."))
+              ""
+              "It declares:"
+              (help/bullet-list (map name declared))
+              ""
+              (str "HINT: "
+                   (str/join "; "
+                             (for [u undeclared
+                                   :let [near (help/suggest u declared 2)]
+                                   :when (seq near)]
+                               (str (help/backtick u) " -> did you mean "
+                                    (str/join " or " (map help/backtick near)) "?")))))))
+
+    :routes/missing-params
+    (assoc answer :message
+           (help/join-lines
+            (str "Route `" (id-str (:route answer)) "` needs "
+                 (str/join ", " (map help/backtick (:missing answer)))
+                 " and they were not given.")
+            ""
+            (str "HINT: params use the fork's own camelCase wire names, so "
+                 (help/backtick "binId") " rather than " (help/backtick "bin-id") ".")))
+
+    answer))
+
+(defn- wire-params
+  "MCP hands params with STRING keys; the route catalog and the headless verbs
+   both speak KEYWORDS.
+
+   Nothing bridged the two until 2026-09-20, and both transports suffered for
+   it in their own way. `routes/request` asks `(contains? params :binId)`, so
+   over HTTP every required param of every call read as missing. The headless
+   verbs destructure `{:keys [name isAudio]}`, so a call arriving from MCP
+   bound nil and carried on: `timeline/add-track` really did create tracks
+   named nil, and nothing failed.
+
+   The fork's own spelling is camelCase, so the keyword is the wire name
+   verbatim: \"binId\" -> :binId, never :bin-id."
+  [params]
+  (into {} (map (fn [[k v]] [(if (string? k) (keyword k) k) v])) (or params {})))
+
 (defn- handle-kdenlive-call
   "One catalog route, answered by the fork over HTTP, or, when `project` names
    a timeline file, by the headless :document transport. Same route ids, same
-   params either way."
+   params either way.
+
+   Params are keywordized on the way in and every answer goes through
+   `actionable`, so a refusal from the route catalog carries a message the
+   reader can act on instead of only a keyword."
   [{:strs [route params project] :as _in}]
   (cond
     (not (string? route))
@@ -48,10 +138,11 @@
     {:error :kdenlive/bad-params :message "project must be a path string"}
 
     (string? project)
-    (kdenlive/-call (document/document-kdenlive project) (route-id route) (or params {}))
+    (actionable (kdenlive/-call (document/document-kdenlive project)
+                                (route-id route) (wire-params params)))
 
     :else
-    (kdenlive/call (route-id route) (or params {}))))
+    (actionable (kdenlive/call (route-id route) (wire-params params)))))
 
 (defn- handle-routes [_]
   {:ok {:routes (mapv #(select-keys % [:id :method :path]) routes/catalog)}})
@@ -79,7 +170,14 @@
 ;; Tool definitions
 
 (def tool-defs
-  [{:name        "render"
+  "Every tool is named kdenlive_<verb>.
+
+   Four of these were once bare: render, routes, ping and inspect_project.
+   An MCP host mounts many addons into ONE tool namespace, so a bare `ping`
+   or `render` is a name this addon has no claim to, and the fleet spells
+   every other addon's tools gimp_*, creator_*, publisher_*. Renamed
+   2026-09-20; nothing outside this repo referenced the old names."
+  [{:name        "kdenlive_render"
     :description "Render an MLT XML document to a video file via headless melt."
     :inputSchema {:type       "object"
                   :properties {"mlt_xml"  {:type "string" :description "MLT XML document"}
@@ -100,15 +198,15 @@
                                "project" {:type "string" :description "optional: timeline file for the headless transport"}}
                   :required   ["route"]}
     :handler     handle-kdenlive-call}
-   {:name        "routes"
+   {:name        "kdenlive_routes"
     :description "List the Kdenlive route catalog."
     :inputSchema {:type "object" :properties {}}
     :handler     handle-routes}
-   {:name        "ping"
+   {:name        "kdenlive_ping"
     :description "Probe melt on PATH and the Kdenlive scripting fork."
     :inputSchema {:type "object" :properties {}}
     :handler     handle-ping}
-   {:name        "inspect_project"
+   {:name        "kdenlive_inspect_project"
     :description "Summarize a .kdenlive/MLT project file: profile, bin, tracks, duration."
     :inputSchema {:type       "object"
                   :properties {"path" {:type "string" :description "project file path"}}

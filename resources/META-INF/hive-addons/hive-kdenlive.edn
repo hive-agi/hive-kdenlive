@@ -7,7 +7,12 @@
  :addon/config       {}
  :addon/capabilities #{:tools :health-reporting}
  :addon/dependencies #{}
- :addon/description  "Kdenlive / MLT video editing: portable MLT document core, headless melt rendering, HTTP transport to the Kdenlive scripting fork driven by a route catalog. Tools: render, kdenlive_call, routes, ping, inspect_project."
+ :addon/description  "Kdenlive / MLT video editing: portable MLT document core, headless melt rendering, HTTP transport to the Kdenlive scripting fork driven by a route catalog. Tools: kdenlive_render, kdenlive_call, kdenlive_routes, kdenlive_ping, kdenlive_inspect_project."
  :addon/maturity     :experimental
+ ;; MIT, as the LICENSE file and version.edn :license say, and as the public
+ ;; host implies: this is on GitHub and published to Clojars. Every sibling in
+ ;; the media stack declares its licence here (hive-gimp MIT, hive-creator and
+ ;; hive-publisher Proprietary); this manifest was the one that did not.
+ :addon/license      "MIT"
  :addon/trust-class  :foss
  :addon/lifecycle {:policy :lazy :idle-ms 900000}}

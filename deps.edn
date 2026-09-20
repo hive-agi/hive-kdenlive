@@ -4,8 +4,12 @@
  ;; clojure.core and clojure.string only, no reader conditionals.
  ;; hive-addon is the host-neutral IAddon contract for the addon wiring only;
  ;; the portable namespaces never require it.
+ ;; hive-help turns a refusal into a message a human or an agent can act on
+ ;; (the fleet's shared error vocabulary). Boundary only: the portable
+ ;; namespaces answer error VALUES, and hive-kdenlive.addon renders them.
  :deps {org.clojure/clojure {:mvn/version "1.12.6"}
-        io.github.hive-agi/hive-addon {:mvn/version "1.0.14"}}
+        io.github.hive-agi/hive-addon {:mvn/version "1.0.14"}
+        io.github.hive-agi/hive-help {:mvn/version "0.1.4"}}
 
  :aliases
  {:dev  {:extra-paths ["dev" "test"]

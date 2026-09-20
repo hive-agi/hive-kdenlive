@@ -110,8 +110,18 @@
 
 (def published-tools
   "The surface a host sees after mounting THIS manifest. Pinned by name so a
-   tool cannot be added or dropped without this test saying so."
-  #{"render" "kdenlive_call" "routes" "ping" "inspect_project"})
+   tool cannot be added or dropped without this test saying so.
+
+   Every name is prefixed kdenlive_ since 2026-09-20. A host mounts many
+   addons into one tool namespace, so a bare `ping` or `render` claims a name
+   this addon does not own."
+  #{"kdenlive_render" "kdenlive_call" "kdenlive_routes"
+    "kdenlive_ping" "kdenlive_inspect_project"})
+
+(deftest every-published-tool-is-namespaced-to-this-addon-test
+  (testing "a bare verb would collide with any other addon in the same host"
+    (doseq [t published-tools]
+      (is (str/starts-with? t "kdenlive_") (str t " is not prefixed")))))
 
 (deftest the-published-tools-are-the-declared-surface-test
   (let [m     (manifest)
@@ -137,11 +147,11 @@
    reword the description and one of the assertions below fails. Every
    published tool is advertised since 2026-09-13, when the description gained
    its Tools: list."
-  {"render"          "headless melt rendering"
-   "kdenlive_call"   "HTTP transport to the Kdenlive scripting fork"
-   "routes"          "route catalog"
-   "ping"            "ping"
-   "inspect_project" "inspect_project"})
+  {"kdenlive_render"          "headless melt rendering"
+   "kdenlive_call"            "HTTP transport to the Kdenlive scripting fork"
+   "kdenlive_routes"          "route catalog"
+   "kdenlive_ping"            "kdenlive_ping"
+   "kdenlive_inspect_project" "kdenlive_inspect_project"})
 
 (deftest the-description-advertises-only-tools-that-exist-test
   (let [description (:addon/description (manifest))]
