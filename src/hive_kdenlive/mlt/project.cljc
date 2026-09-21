@@ -68,31 +68,39 @@
 
    Each timeline track resolves one level: {:id :tracks [...]}, where a
    track referencing a playlist expands to {:id :hide :entries :blanks}
-   and one referencing a sub-tractor keeps :id with :tracks nested."
-  [mlt-node]
-  (let [tractors  (xml/children mlt-node "tractor")
-        by-id     (into {} (map (fn [t] [(xml/attr t "id") t])) tractors)
-        playlists (into {} (map (fn [p] [(xml/attr p "id") p]))
-                        (xml/children mlt-node "playlist"))
-        expand    (fn expand [t]
-                    (let [ref (xml/attr t "producer")]
-                      (cond
-                        (contains? playlists ref)
-                        {:id      ref
-                         :hide    (xml/attr t "hide")
-                         :entries (mapv entry-summary
-                                        (xml/children (playlists ref) "entry"))
-                         :blanks  (mapv #(parse-long (xml/attr % "length"))
-                                        (xml/children (playlists ref) "blank"))}
+   and one referencing a sub-tractor keeps :id with :tracks nested.
 
-                        (contains? by-id ref)
-                        {:id     ref
-                         :tracks (mapv expand (tractor-tracks (by-id ref)))}
+   :blanks are frame counts. Kdenlive writes a blank's length as a clock
+   (\"00:00:00.640\"), resolved at FPS (default: the document's profile); a
+   clock that cannot be resolved stays the string it was."
+  ([mlt-node] (tracks mlt-node (:fps (profile-summary mlt-node))))
+  ([mlt-node fps]
+   (let [tractors  (xml/children mlt-node "tractor")
+         by-id     (into {} (map (fn [t] [(xml/attr t "id") t])) tractors)
+         playlists (into {} (map (fn [p] [(xml/attr p "id") p]))
+                         (xml/children mlt-node "playlist"))
+         frames    (fn [s] (or (when (re-matches #"\d+" (str s)) (parse-long s))
+                               (when (and fps (string? s)) (time/clock->frames s fps))
+                               s))
+         expand    (fn expand [t]
+                     (let [ref (xml/attr t "producer")]
+                       (cond
+                         (contains? playlists ref)
+                         {:id      ref
+                          :hide    (xml/attr t "hide")
+                          :entries (mapv entry-summary
+                                         (xml/children (playlists ref) "entry"))
+                          :blanks  (mapv #(frames (xml/attr % "length"))
+                                         (xml/children (playlists ref) "blank"))}
 
-                        :else {:id ref})))
-        timeline  (last (sort-by #(count (tractor-tracks %)) tractors))]
-    (when timeline
-      (mapv expand (tractor-tracks timeline)))))
+                         (contains? by-id ref)
+                         {:id     ref
+                          :tracks (mapv expand (tractor-tracks (by-id ref)))}
+
+                         :else {:id ref})))
+         timeline  (last (sort-by #(count (tractor-tracks %)) tractors))]
+     (when timeline
+       (mapv expand (tractor-tracks timeline))))))
 
 (defn summarize
   "Parse an MLT XML string into {:profile :bin :tracks}.
@@ -115,7 +123,8 @@
 (defn duration-frames
   "Total timeline length in frames: the longest track's entries + blanks,
    resolved at the profile's fps. Cuts given as clocks convert; bare numbers
-   are already frames. Sub-tractor nesting is flattened first."
+   are already frames; a blank `tracks` could not resolve counts 0.
+   Sub-tractor nesting is flattened first."
   [{:keys [profile tracks]}]
   (let [fps (:fps profile)]
     (when (and fps tracks)
@@ -126,7 +135,7 @@
                                       (if (and in out)
                                         (+ acc (or (time/duration in out fps) 0))
                                         acc))
-                                    (+ acc (or (:length item) 0))))
+                                    (+ acc (if (number? (:length item)) (:length item) 0))))
                                 0
                                 (concat (:entries t)
                                         (map (fn [b] {:length b}) (:blanks t))))]

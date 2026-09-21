@@ -72,11 +72,11 @@
 
 (defn clock->frames
   "Clock string to frame count at `fps`. A bare integer string is already a
-   frame count and passes through."
+   frame count and passes through. nil for a malformed string."
   [s fps]
   (if (re-matches #"\d+" s)
     (parse-long s)
-    (millis->frames (clock->millis s) fps)))
+    (when-let [ms (clock->millis s)] (millis->frames ms fps))))
 
 (defn frames->clock
   "Frame count to \"HH:MM:SS.mmm\" at `fps`."

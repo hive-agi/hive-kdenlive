@@ -46,6 +46,20 @@
     (is (= 176 (project/duration-frames ok))))
   (is (nil? (project/duration-frames {:profile nil :tracks []}))))
 
+(deftest clock-blanks-test
+  (testing "Kdenlive writes a blank's length as a clock; it counts in frames"
+    (let [doc (str "<mlt><profile width=\"1280\" height=\"720\" frame_rate_num=\"25\" frame_rate_den=\"1\"/>"
+                   "<producer id=\"p0\"><property name=\"resource\">/v/a.mp4</property></producer>"
+                   "<playlist id=\"pl\"><blank length=\"00:00:00.640\"/>"
+                   "<entry producer=\"p0\" in=\"00:00:00.000\" out=\"00:00:00.160\"/></playlist>"
+                   "<tractor id=\"t\"><track producer=\"pl\"/></tractor></mlt>")
+          {:keys [ok]} (project/summarize doc)]
+      (is (= [16] (:blanks (first (:tracks ok)))))
+      (is (= 21 (project/duration-frames ok)) "16 blank + 5 frames of clip")))
+  (testing "a clock with no fps to resolve it stays as written and counts nothing"
+    (let [doc "<mlt><playlist id=\"pl\"><blank length=\"00:00:01.000\"/></playlist><tractor id=\"t\"><track producer=\"pl\"/></tractor></mlt>"]
+      (is (= ["00:00:01.000"] (:blanks (first (:tracks (:ok (project/summarize doc))))))))))
+
 (deftest bare-document-bin-test
   (testing "without main_bin, producers ARE the bin"
     (let [doc (model/emit (model/document
