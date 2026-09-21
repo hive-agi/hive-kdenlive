@@ -273,3 +273,25 @@
             (is (= [:green :green :red] (at out 45)))
             (is (= [:green :green :green] (at out 55)))))
         (doseq [f (reverse (file-seq dir))] (.delete ^java.io.File f))))))
+
+(deftest render-start-params-override-the-encoding-defaults
+  (let [dir   (doto (io/file (System/getProperty "java.io.tmpdir") (str "hive-kdenlive-params-" (System/nanoTime))) .mkdirs)
+        k     (document/document-kdenlive (str dir "/p.hkd.edn") (fn [_] {:length 10}))
+        seen  (atom [])
+        stub  (reify render/IRender
+                (-render [_ _ out opts] (swap! seen conj opts) {:ok {:out out}}))
+        {[b] :ids} (:ok (client/-call k :media/import {:paths ["/m/a.mp4"]}))
+        {v :id}    (:ok (client/-call k :timeline/add-track {:name "V1" :isAudio false}))]
+    (client/-call k :timeline/insert-clip {:binId b :trackId v :position 0})
+    (binding [render/*renderer* stub]
+      (testing "a preset string and a map both merge over the .mp4 defaults"
+        (is (:ok (client/-call k :render/start {:outputFile (str dir "/a.mp4") :params "vcodec=mpeg4 vb=2M"})))
+        (is (:ok (client/-call k :render/start {:outputFile (str dir "/b.mp4") :params {"crf" 28}})))
+        (let [[a b] (map :consumer @seen)]
+          (is (= ["mpeg4" "2M" "yuv420p" "aac"] (mapv #(get a %) ["vcodec" "vb" "pix_fmt" "acodec"])))
+          (is (= ["libx264" "28"] (mapv #(get b %) ["vcodec" "crf"])))))
+      (testing "a malformed one is refused before melt runs"
+        (is (= :render/bad-consumer-option
+               (:error (client/-call k :render/start {:outputFile (str dir "/c.mp4") :params "vcodec"}))))
+        (is (= 2 (count @seen)))))
+    (doseq [f (reverse (file-seq dir))] (.delete ^java.io.File f))))

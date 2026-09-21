@@ -104,17 +104,23 @@
 (defn- keywordize [params]
   (into {} (map (fn [[k v]] [(if (keyword? k) k (keyword (str k))) v])) params))
 
-(defn- render-start [path state {:keys [outputFile]}]
-  (cond
-    (str/blank? (str outputFile)) {:error :render/output-required}
-    (zero? (timeline/duration state)) {:error :render/empty-timeline}
-    :else
-    (let [out (str outputFile)
-          {:keys [ok error] :as res} (render/render-doc! (timeline/->document state) out
-                                                         :extra (render/encoding-for out))]
-      (if error
-        res
-        {:ok {:success true :outputFile (:out ok) :frames (timeline/duration state) :project path}}))))
+(defn- render-start
+  "Renders STATE to outputFile. `params`, the fork's own render param, is a
+   map or key=value string of avformat consumer properties, merged over
+   render/encoding-for's defaults for the file's extension."
+  [path state {:keys [outputFile params]}]
+  (let [{consumer :ok :as checked} (render/consumer-map params)]
+    (cond
+      (str/blank? (str outputFile)) {:error :render/output-required}
+      (zero? (timeline/duration state)) {:error :render/empty-timeline}
+      (:error checked) checked
+      :else
+      (let [out (str outputFile)
+            {:keys [ok error] :as res} (render/render-doc! (timeline/->document state) out
+                                                           :consumer (merge (render/encoding-for out) consumer))]
+        (if error
+          res
+          {:ok {:success true :outputFile (:out ok) :frames (timeline/duration state) :project path}})))))
 
 (defrecord DocumentKdenlive [path probe]
   client/IKdenlive

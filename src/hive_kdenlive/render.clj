@@ -15,13 +15,52 @@
 ;; ---------------------------------------------------------------------------
 ;; Pure
 
+(defn consumer-map
+  "Avformat consumer properties as a {\"key\" \"value\"} map. Takes a map
+   (keyword or string keys, string/number/boolean values) or a Kdenlive
+   preset string of space-separated key=value pairs (\"vcodec=libx264 crf=18\").
+   nil -> {}. => {:ok map} | {:error :render/bad-consumer-option ...}."
+  [consumer]
+  (cond
+    (nil? consumer) {:ok {}}
+    (string? consumer)
+    (let [pairs (remove str/blank? (str/split (str/trim consumer) #"\s+"))
+          bad   (first (remove (fn [p] (re-matches #"[^=]+=.*" p)) pairs))]
+      (if bad
+        {:error :render/bad-consumer-option :option bad :expected "key=value"}
+        {:ok (into {} (map (fn [p] (let [[k v] (str/split p #"=" 2)] [k v]))) pairs)}))
+    (map? consumer)
+    (let [named (fn [k] (if (keyword? k) (subs (str k) 1) (str k)))
+          bad   (first (remove (fn [[k v]]
+                                 (and (re-matches #"[A-Za-z_][A-Za-z0-9_.:+-]*" (named k))
+                                      (or (string? v) (number? v) (boolean? v))))
+                               consumer))]
+      (if bad
+        {:error :render/bad-consumer-option :option (named (key bad)) :value (val bad)
+         :expected "a property name and a string, number or boolean value"}
+        {:ok (into {} (map (fn [[k v]] [(named k) (str v)])) consumer)}))
+    :else {:error :render/bad-consumer-option :option consumer :expected "a map or a key=value string"}))
+
+(defn consumer-args
+  "CONSUMER (see `consumer-map`) as melt key=value args, sorted by key.
+   => {:ok [\"k=v\" ...]} | {:error ...}."
+  [consumer]
+  (let [{:keys [ok] :as res} (consumer-map consumer)]
+    (if ok
+      {:ok (mapv (fn [[k v]] (str k "=" v)) (sort-by key ok))}
+      res)))
+
 (defn melt-argv
   "The melt command vector for rendering `mlt-path` to `out-path`.
-   opts: :profile (avformat profile name), :extra (seq of raw args)."
-  [melt-bin mlt-path out-path & {:keys [profile extra] :as _opts}]
+   opts: :profile (avformat profile name), :consumer (map of avformat consumer
+   properties, emitted as key=value args sorted by key; validate it with
+   `consumer-args` first), :extra (seq of raw args, after the consumer ones)."
+  [melt-bin mlt-path out-path & {:keys [profile consumer extra] :as _opts}]
   (into (cond-> [melt-bin mlt-path]
           profile (conj (str "profile=" profile)))
-        (concat ["-consumer" (str "avformat:" out-path)] extra)))
+        (concat ["-consumer" (str "avformat:" out-path)]
+                (:ok (consumer-args consumer))
+                extra)))
 
 (defn which
   "Absolute path of `bin` on PATH, or nil."
@@ -60,15 +99,15 @@
   (vec (distinct (map str/trim (re-seq #"[^\r\n]*failed to load[^\r\n]*" (or stderr ""))))))
 
 (defn encoding-for
-  "Consumer arguments for OUT-PATH by extension: H.264 in yuv420p with AAC for
-   .mp4/.mov/.m4v, the combination phones and social players accept, and
-   faststart so playback begins before the download ends. Other extensions
-   get melt's own choice."
+  "Default consumer properties for OUT-PATH by extension, as a `consumer-map`
+   map: H.264 in yuv420p with AAC for .mp4/.mov/.m4v, the combination phones
+   and social players accept, and faststart so playback begins before the
+   download ends. Other extensions get {} (melt's own choice)."
   [out-path]
   (if (re-find #"(?i)\.(mp4|mov|m4v)$" (str out-path))
-    ["vcodec=libx264" "pix_fmt=yuv420p" "crf=18" "preset=medium"
-     "acodec=aac" "ab=192k" "movflags=+faststart"]
-    []))
+    {"vcodec" "libx264" "pix_fmt" "yuv420p" "crf" "18" "preset" "medium"
+     "acodec" "aac" "ab" "192k" "movflags" "+faststart"}
+    {}))
 
 ;; ---------------------------------------------------------------------------
 ;; Port
@@ -123,14 +162,20 @@
 
 (defn render!
   "Render MLT XML (a string) to `out-path` via `*renderer*`. The document is
-   written to a temp file because melt consumes paths, not stdin."
+   written to a temp file because melt consumes paths, not stdin.
+   opts: see `melt-argv`. An invalid :consumer is refused before anything runs;
+   a valid one reaches the renderer normalized to a `consumer-map` map."
   [mlt-xml out-path & {:as opts}]
-  (let [tmp (java.io.File/createTempFile "hive-kdenlive-" ".mlt")]
-    (try
-      (spit tmp mlt-xml)
-      (-render (if (delay? *renderer*) @*renderer* *renderer*)
-               (.getAbsolutePath tmp) out-path opts)
-      (finally (.delete tmp)))))
+  (let [{consumer :ok :as checked} (consumer-map (:consumer opts))]
+    (if (:error checked)
+      checked
+      (let [opts (cond-> (or opts {}) (contains? opts :consumer) (assoc :consumer consumer))
+            tmp  (java.io.File/createTempFile "hive-kdenlive-" ".mlt")]
+        (try
+          (spit tmp mlt-xml)
+          (-render (if (delay? *renderer*) @*renderer* *renderer*)
+                   (.getAbsolutePath tmp) out-path opts)
+          (finally (.delete tmp)))))))
 
 (defn render-doc!
   "Like render! but takes a model node tree."

@@ -19,12 +19,14 @@
 ;; Tool handlers — thin: seam dispatch, data in, data out
 
 (defn- handle-render
-  [{:strs [mlt_xml out profile]}]
+  [{:strs [mlt_xml out profile consumer]}]
   (cond
     (not (string? mlt_xml)) {:error :kdenlive/bad-params :message "mlt_xml must be a string"}
     (not (string? out))     {:error :kdenlive/bad-params :message "out must be a path string"}
     :else
-    (render/render! mlt_xml out (cond-> {} (string? profile) (assoc :profile profile)))))
+    (render/render! mlt_xml out (cond-> {}
+                                  (string? profile) (assoc :profile profile)
+                                  (some? consumer)  (assoc :consumer consumer)))))
 
 (defn- route-id
   "Normalize an MCP caller's route string to a catalog id keyword.
@@ -182,7 +184,11 @@
     :inputSchema {:type       "object"
                   :properties {"mlt_xml"  {:type "string" :description "MLT XML document"}
                                "out"      {:type "string" :description "output file path"}
-                               "profile"  {:type "string" :description "avformat profile (optional)"}}
+                               "profile"  {:type "string" :description "avformat profile (optional)"}
+                               "consumer" {:type        ["object" "string"]
+                                           :description (str "avformat consumer properties (optional), e.g. "
+                                                             "{\"vcodec\": \"libx264\", \"crf\": 23} or "
+                                                             "\"vcodec=libx264 crf=23\"")}}
                   :required   ["mlt_xml" "out"]}
     :handler     handle-render}
    {:name        "kdenlive_call"
