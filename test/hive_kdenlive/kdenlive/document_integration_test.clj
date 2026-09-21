@@ -13,7 +13,9 @@
             [clojure.test :refer [deftest is testing]]
             [hive-kdenlive.kdenlive.client :as client]
             [hive-kdenlive.kdenlive.document :as document]
-            [hive-kdenlive.render :as render]))
+            [hive-kdenlive.render :as render]
+            [hive-kdenlive.mlt.transitions :as transitions]
+            [clojure.edn :as edn]))
 
 (defn- sh [& argv]
   (let [proc (.start (ProcessBuilder. ^java.util.List (vec argv)))
@@ -187,4 +189,87 @@
             (is (< -30 (tone-level out 440 0 1)))
             (is (< -30 (tone-level out 1000 0 1)))
             (is (> -38 (tone-level out 1000 2.7 0.3)) "the last 0.3 s of a 1 s fade-out")))
+        (doseq [f (reverse (file-seq dir))] (.delete ^java.io.File f))))))
+
+(defn- rgb-of-frame
+  "[r g b] of the 16x16 block at (X, Y) in frame N of PATH, averaged."
+  [path n x y]
+  (let [proc  (.start (ProcessBuilder. ^java.util.List
+                                      ["ffmpeg" "-v" "error" "-i" path
+                                       "-vf" (str "select=eq(n\\," n "),crop=16:16:" x ":" y ",scale=1:1")
+                                       "-fps_mode" "passthrough" "-frames:v" "1"
+                                       "-f" "rawvideo" "-pix_fmt" "rgb24" "-"]))
+        bytes (.readAllBytes (.getInputStream proc))]
+    (.waitFor proc)
+    (mapv #(bit-and % 0xff) (take 3 bytes))))
+
+(defn- transition-render!
+  "Red (440 Hz) 0..50 and lime (1000 Hz) 30..80, each 50 frames at 1080p25,
+   the incoming (lime) one on V2, the upper track, when UPPER-INCOMING?,
+   otherwise on V1 under the red one; joined by a KIND
+   transition planned from the project on disk and applied through the
+   :document transport. => the rendered .mp4 path."
+  [melt dir kind upper-incoming? call-fn]
+  (let [clip! (fn [path c f]
+                (sh "ffmpeg" "-y" "-v" "error" "-f" "lavfi" "-i" (str "color=c=" c ":s=1920x1080:r=25:d=2")
+                    "-f" "lavfi" "-i" (str "sine=f=" f ":d=2")
+                    "-c:v" "libx264" "-pix_fmt" "yuv420p" "-c:a" "aac" "-shortest" path))
+        tag   (str (name kind) (if upper-incoming? "-in" "-out"))
+        red   (str dir "/red.mp4")
+        lime  (str dir "/lime.mp4")
+        proj  (str dir "/" tag ".hkd.edn")
+        out   (str dir "/" tag ".mp4")
+        _     (when-not (.isFile (io/file red)) (clip! red "red" 440) (clip! lime "lime" 1000))
+        k     (document/document-kdenlive proj (document/melt-probe melt))
+        call  (call-fn k)
+        {[r g] :ids} (call :media/import {:paths [red lime]})
+        {v1 :id} (call :timeline/add-track {:name "V1" :isAudio false})
+        {v2 :id} (call :timeline/add-track {:name "V2" :isAudio false})
+        {ca :id} (call :timeline/insert-clip {:binId r :trackId (if upper-incoming? v1 v2) :position 0})
+        {cb :id} (call :timeline/insert-clip {:binId g :trackId (if upper-incoming? v2 v1) :position 30})
+        {:keys [ok error] :as plan} (transitions/plan (edn/read-string (slurp proj)) {:kind kind :from ca :to cb})]
+    (is (nil? error) (pr-str plan))
+    (doseq [[route params] (:calls ok)] (call route params))
+    (call :render/start {:outputFile out})
+    out))
+
+(deftest ^:integration transitions-render-as-planned
+  (let [melt (render/which "melt")]
+    (if-not (and melt (render/which "ffprobe") (render/which "ffmpeg"))
+      (is true "melt, ffprobe or ffmpeg not on PATH: skipped")
+      (let [dir     (doto (io/file (System/getProperty "java.io.tmpdir") (str "hive-kdenlive-transitions-" (System/nanoTime))) .mkdirs)
+            call-fn (fn [k] (fn [route params]
+                              (let [{:keys [ok error] :as res} (client/-call k route params)]
+                                (is (nil? error) (pr-str route params res))
+                                ok)))
+            at      (fn [out n] (mapv (fn [x] (colour (rgb-of-frame out n x 540))) [100 960 1800]))]
+        (testing "a dissolve crosses the whole picture from red to lime over the overlap, frames 30..49"
+          (let [out (transition-render! melt dir :dissolve true call-fn)]
+            (is (= 80 (frame-count out)))
+            (is (= [:red :red :red] (at out 29)))
+            (let [[r g b] (rgb-of-frame out 40 960 540)]
+              (is (and (< 80 r 170) (< 80 g 170) (< b 40)) (str "half way is a mix: " [r g b])))
+            (is (= [:green :green :green] (at out 49)))
+            (testing "and the audio crosses with it"
+              (is (< -30 (tone-level out 440 0.4 0.2)))
+              (is (> -50 (tone-level out 1000 0.4 0.2)) "the incoming tone is silent before the overlap")
+              (is (> -38 (tone-level out 440 1.8 0.2)) "the outgoing tone is leaving")
+              (is (< -30 (tone-level out 1000 1.8 0.2))))))
+        (testing "a dissolve with the OUTGOING clip on top fades it out over the incoming one"
+          (let [out (transition-render! melt dir :dissolve false call-fn)]
+            (is (= [:red :red :red] (at out 29)))
+            (let [[r g _] (rgb-of-frame out 40 960 540)]
+              (is (and (< 80 r 170) (< 80 g 170)) (str "half way is a mix: " [r g])))
+            (is (= [:green :green :green] (at out 49)))))
+        (testing "slide-left pushes the incoming picture in from the right edge"
+          (let [out (transition-render! melt dir :slide-left true call-fn)]
+            (is (= [:red :red :red] (at out 29)))
+            (is (= [:red :red :green] (at out 35)))
+            (is (= [:red :green :green] (at out 45)))
+            (is (= [:green :green :green] (at out 49)))))
+        (testing "slide-right with the outgoing clip on top moves it off to the right, uncovering the incoming one"
+          (let [out (transition-render! melt dir :slide-right false call-fn)]
+            (is (= [:green :red :red] (at out 35)))
+            (is (= [:green :green :red] (at out 45)))
+            (is (= [:green :green :green] (at out 55)))))
         (doseq [f (reverse (file-seq dir))] (.delete ^java.io.File f))))))
