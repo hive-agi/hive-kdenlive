@@ -8,7 +8,7 @@
  ;; (the fleet's shared error vocabulary). Boundary only: the portable
  ;; namespaces answer error VALUES, and hive-kdenlive.addon renders them.
  :deps {org.clojure/clojure {:mvn/version "1.12.6"}
-        io.github.hive-agi/hive-addon {:mvn/version "1.0.14"}
+        io.github.hive-agi/hive-addon {:mvn/version "1.0.15"}
         io.github.hive-agi/hive-help {:mvn/version "0.1.4"}}
 
  :aliases
@@ -23,5 +23,5 @@
          :main-opts ["-m" "kaocha.runner"]}
 
   ;; Build + Clojars deploy: clojure -T:build jar | clojure -T:build deploy
-  :build {:deps {io.github.hive-agi/hive-build {:mvn/version "0.1.22"}}
+  :build {:deps {io.github.hive-agi/hive-build {:mvn/version "0.1.24"}}
           :ns-default hive-build.api}}}
