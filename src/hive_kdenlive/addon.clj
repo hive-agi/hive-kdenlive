@@ -146,12 +146,18 @@
     :else
     (actionable (kdenlive/call (route-id route) (wire-params params)))))
 
-(defn- handle-routes [_]
-  {:ok {:routes (mapv #(select-keys % [:id :method :path]) routes/catalog)}})
+(defn- handle-routes [{:strs [prefix]}]
+  (let [id-str (fn [id] (if (keyword? id) (subs (str id) 1) (str id)))]
+    {:ok {:routes (into []
+                        (comp (filter #(or (nil? prefix) (str/starts-with? (id-str (:id %)) prefix)))
+                              (map #(select-keys % [:id :method :path])))
+                        routes/catalog)}}))
 
-(defn- handle-ping [_]
-  {:ok {:kdenlive (kdenlive/ping)
-        :melt     (some? (render/which "melt"))}})
+(defn- handle-ping [{:strs [targets]}]
+  (let [want (if (seq targets) (set targets) #{"kdenlive" "melt"})]
+    {:ok (cond-> {}
+           (want "kdenlive") (assoc :kdenlive (kdenlive/ping))
+           (want "melt")     (assoc :melt (some? (render/which "melt"))))}))
 
 (defn- handle-inspect-project
   [{:strs [path] :as _in}]
@@ -206,11 +212,16 @@
     :handler     handle-kdenlive-call}
    {:name        "kdenlive_routes"
     :description "List the Kdenlive route catalog."
-    :inputSchema {:type "object" :properties {}}
+    :inputSchema {:type       "object"
+                  :properties {"prefix" {:type        "string"
+                                         :description "Only routes whose id starts with this, e.g. timeline/; omit for all."}}}
     :handler     handle-routes}
    {:name        "kdenlive_ping"
     :description "Probe melt on PATH and the Kdenlive scripting fork."
-    :inputSchema {:type "object" :properties {}}
+    :inputSchema {:type       "object"
+                  :properties {"targets" {:type        "array"
+                                          :items       {:type "string" :enum ["kdenlive" "melt"]}
+                                          :description "Probe only these; omit to probe both."}}}
     :handler     handle-ping}
    {:name        "kdenlive_inspect_project"
     :description "Summarize a .kdenlive/MLT project file: profile, bin, tracks, duration."
