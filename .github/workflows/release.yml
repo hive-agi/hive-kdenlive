@@ -16,7 +16,15 @@ on:
       - 'version.edn'
       - 'test/**'
       - '.github/workflows/release.yml'
+  # A push mints a patch; a minor or major is a dispatch input.
   workflow_dispatch:
+    inputs:
+      level:
+        description: 'Version bump level'
+        required: false
+        default: 'patch'
+        type: choice
+        options: [patch, minor, major]
 
 concurrency:
   group: release-${{ github.ref }}
@@ -53,7 +61,7 @@ jobs:
         run: clojure -M:test unit
 
       - name: Bump patch version
-        run: clojure -T:build bump :level :patch
+        run: clojure -T:build bump :level :${{ inputs.level || 'patch' }}
 
       - name: Regenerate changelog
         run: clojure -T:build changelog
