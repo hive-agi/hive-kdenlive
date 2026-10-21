@@ -64,6 +64,18 @@ jobs:
       - name: Test
         run: clojure -M:test unit
 
+      # The release number comes from the tags, not from a commit back to main.
+      # VERSION in the tree is a FLOOR (raise it in a staging PR to open a new
+      # minor line); this run releases patch+1 of max(VERSION, newest v* tag).
+      - name: Resolve release base from tags
+        run: |
+          set -euo pipefail
+          FLOOR=$(tr -d '[:space:]' < VERSION)
+          LAST=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -n1 | sed 's/^v//')
+          BASE=$(printf '%s\n%s\n' "$FLOOR" "${LAST:-$FLOOR}" | sort -V | tail -n1)
+          echo "VERSION floor $FLOOR, newest tag ${LAST:-none}: base $BASE"
+          printf '%s\n' "$BASE" > VERSION
+
       - name: Bump version
         # Pinned release (hive-agent): a VERSION without its tag is a line a
         # human set, released as written. A tagged VERSION is already out, so
@@ -79,18 +91,17 @@ jobs:
       - name: Regenerate changelog
         run: clojure -T:build changelog
 
-      - name: Commit and tag
+      - name: Tag
         run: |
           set -euo pipefail
-          VER=$(cat VERSION)
+          VER=$(tr -d '[:space:]' < VERSION)
           git config user.name  "hive-ci"
           git config user.email "ci@hive-agi.local"
-          git add VERSION CHANGELOG.md
-          # [skip ci] stops this push from retriggering the workflow.
-          git diff --cached --quiet || git commit -m "chore(release): $VER [skip ci]"
-          # Annotated: `git push --follow-tags` ignores lightweight tags.
+          # Tag only, no commit: a version-bump commit on main is one staging
+          # lacks, and it made every next staging->main PR conflict in VERSION.
+          # Annotated, so the next run's tag scan and `git describe` see it.
           git tag -a "v$VER" -m "release $VER"
-          git push --follow-tags
+          git push origin "refs/tags/v$VER"
 
       - name: Deploy
         env:
