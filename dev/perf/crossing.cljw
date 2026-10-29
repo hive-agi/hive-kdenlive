@@ -1,0 +1,39 @@
+;; Native/component crossing cost on cljw, timed in-process, ns per call.
+;; Cells (each warmed once, then `trials` timed passes of `n` calls):
+;;   fn-call     plain Clojure fn call: the interpreter's own call floor
+;;   core-call   wasm/call into a zero-import core module (add.wasm, i32 add),
+;;               default engine (auto)
+;;   core-interp the same call on {:engine :interp}
+;;   component   wasm/component-call into a component (echo-f64)
+;; core-* minus fn-call is the cljw -> wasm boundary; component minus
+;; core-call is the canonical-ABI lift/lower on top of it.
+;; Fixtures are copied from ClojureWasm bench/ and test/e2e (see README).
+;; Args: [n trials], defaults 20000 5. Run with the dev/perf dir as cwd.
+(defn arg [i dflt]
+  (if-let [s (nth *command-line-args* i nil)] (parse-long s) dflt))
+
+(defn plain-add [a b] (+ a b))
+
+(defn ns-per [f n]
+  (let [t0 (System/nanoTime)]
+    (f)
+    (quot (- (System/nanoTime) t0) (max n 1))))
+
+(let [n (arg 0 20000)
+      trials (arg 1 5)
+      m (wasm/load "fixtures/add.wasm" {:fuel 0})
+      mi (wasm/load "fixtures/add.wasm" {:fuel 0 :engine :interp})
+      c (wasm/load-component "fixtures/echo.component.wasm")
+      _ (assert (= 5 (wasm/call m "add" 2 3)))
+      _ (assert (= 5 (wasm/call mi "add" 2 3)))
+      _ (assert (= 1.5 (wasm/component-call c "echo-f64" 1.5)))
+      cells [["fn-call"     #(loop [i 0] (when (< i n) (plain-add i 1) (recur (inc i))))]
+             ["core-call"   #(loop [i 0] (when (< i n) (wasm/call m "add" i 1) (recur (inc i))))]
+             ["core-interp" #(loop [i 0] (when (< i n) (wasm/call mi "add" i 1) (recur (inc i))))]
+             ["component"   #(loop [i 0] (when (< i n) (wasm/component-call c "echo-f64" 1.5) (recur (inc i))))]]]
+  (doseq [[_ f] cells] (f))
+  (doseq [[nm f] cells]
+    (let [ts (vec (sort (repeatedly trials #(ns-per f n))))]
+      (println (str "cell=" nm " n=" n " trials=" trials
+                    " ns_per_call=" (nth ts (quot (count ts) 2))
+                    " min=" (first ts) " max=" (peek ts))))))
